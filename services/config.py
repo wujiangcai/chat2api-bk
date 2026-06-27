@@ -118,6 +118,15 @@ class ConfigStore:
         return bool(value)
 
     @property
+    def auto_disable_consecutive_fail(self) -> int:
+        """连续失败多少次后自动禁用账号；0 表示关闭。默认 5。"""
+        try:
+            value = int(self.data.get("auto_disable_consecutive_fail", 5))
+        except (TypeError, ValueError):
+            value = 5
+        return max(0, value)
+
+    @property
     def images_dir(self) -> Path:
         path = DATA_DIR / "images"
         path.mkdir(parents=True, exist_ok=True)

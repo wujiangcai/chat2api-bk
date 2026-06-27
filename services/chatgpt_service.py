@@ -658,6 +658,13 @@ class ChatGPTService:
                             "request_token": request_token,
                         })
                         continue
+                    if account and account.get("auto_disabled"):
+                        logger.warning({
+                            "event": "image_generate_auto_disabled",
+                            "request_token": request_token,
+                            "consecutive_fail": account.get("consecutive_fail"),
+                        })
+                        continue
                     break
 
         if not emitted:
@@ -840,6 +847,13 @@ class ChatGPTService:
                         logger.warning({
                             "event": "image_edit_remove_invalid_token",
                             "request_token": request_token,
+                        })
+                        continue
+                    if account and account.get("auto_disabled"):
+                        logger.warning({
+                            "event": "image_edit_auto_disabled",
+                            "request_token": request_token,
+                            "consecutive_fail": account.get("consecutive_fail"),
                         })
                         continue
                     break

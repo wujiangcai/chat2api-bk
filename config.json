@@ -1,8 +1,8 @@
 {
-  "auth-key": "chatgpt2api",
+  "auth-key": "CHANGE_ME_auth_key",
   "refresh_account_interval_minute": 60,
   "image_retention_days": 15,
   "auto_remove_invalid_accounts": false,
-  "proxy": "",
+  "proxy": "http://127.0.0.1:7897",
   "base_url": ""
 }

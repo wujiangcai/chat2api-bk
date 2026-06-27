@@ -64,12 +64,23 @@ class AccountService:
     def _is_image_account_available(account: dict) -> bool:
         if not isinstance(account, dict):
             return False
+        if bool(account.get("disabled")):
+            return False
         status = str(account.get("status") or "").strip()
         if status in {"禁用", "限流", "异常"}:
             return False
         if bool(account.get("image_quota_unknown")):
             return True
-        return int(account.get("quota") or 0) > 0
+        try:
+            quota = int(account.get("quota") or 0)
+        except (TypeError, ValueError):
+            quota = 0
+        if quota > 0:
+            return True
+        account_type = str(account.get("type") or account.get("plan_type") or "").strip().lower()
+        if account_type in {"plus", "pro", "team", "enterprise"}:
+            return True
+        return False
 
     def _decode_access_token_payload(self, access_token: str) -> dict[str, Any]:
         parts = self._clean_token(access_token).split(".")
@@ -146,6 +157,8 @@ class AccountService:
         normalized["restore_at"] = self._clean_token(normalized.get("restore_at")) or None
         normalized["success"] = int(normalized.get("success") or 0)
         normalized["fail"] = int(normalized.get("fail") or 0)
+        normalized["disabled"] = bool(normalized.get("disabled"))
+        normalized["consecutive_fail"] = int(normalized.get("consecutive_fail") or 0)
         normalized["last_used_at"] = normalized.get("last_used_at")
         return normalized
 
@@ -171,7 +184,7 @@ class AccountService:
     def _build_remote_headers(self, access_token: str) -> tuple[dict[str, str], str]:
         account = self.get_account(access_token) or {}
         user_agent = self._clean_token(account.get("user-agent") or account.get("user_agent"))
-        impersonate = self._clean_token(account.get("impersonate")) or "edge101"
+        impersonate = self._clean_token(account.get("impersonate")) or "chrome124"
         headers = {
             "authorization": f"Bearer {access_token}",
             "accept": "*/*",
@@ -215,6 +228,8 @@ class AccountService:
                 "restoreAt": account.get("restore_at"),
                 "success": int(account.get("success") or 0),
                 "fail": int(account.get("fail") or 0),
+                "disabled": bool(account.get("disabled")),
+                "consecutiveFail": int(account.get("consecutive_fail") or 0),
                 "lastUsedAt": account.get("last_used_at"),
             }
             for account in accounts
@@ -371,7 +386,11 @@ class AccountService:
             index = self._find_account_index(access_token)
             if index < 0:
                 return None
-            account = self._normalize_account({**self._accounts[index], **updates, "access_token": access_token})
+            merged_updates = dict(updates)
+            # 手动启用账号时同时清零连续失败计数，避免再次触发自动禁用
+            if merged_updates.get("disabled") is False:
+                merged_updates["consecutive_fail"] = 0
+            account = self._normalize_account({**self._accounts[index], **merged_updates, "access_token": access_token})
             if account is None:
                 return None
             self._accounts[index] = account
@@ -384,6 +403,7 @@ class AccountService:
         access_token = self._clean_token(access_token)
         if not access_token:
             return None
+        auto_disabled = False
         with self._lock:
             index = self._find_account_index(access_token)
             if index < 0:
@@ -393,6 +413,7 @@ class AccountService:
             image_quota_unknown = bool(next_item.get("image_quota_unknown"))
             if success:
                 next_item["success"] = int(next_item.get("success") or 0) + 1
+                next_item["consecutive_fail"] = 0
                 if not image_quota_unknown:
                     next_item["quota"] = max(0, int(next_item.get("quota") or 0) - 1)
                 if not image_quota_unknown and next_item["quota"] == 0:
@@ -402,12 +423,25 @@ class AccountService:
                     next_item["status"] = "正常"
             else:
                 next_item["fail"] = int(next_item.get("fail") or 0) + 1
+                next_item["consecutive_fail"] = int(next_item.get("consecutive_fail") or 0) + 1
+                threshold = config.auto_disable_consecutive_fail
+                if threshold > 0 and next_item["consecutive_fail"] >= threshold and not next_item.get("disabled"):
+                    next_item["disabled"] = True
+                    auto_disabled = True
             account = self._normalize_account(next_item)
             if account is None:
                 return None
             self._accounts[index] = account
             self._save_accounts()
-            return dict(account)
+            if auto_disabled:
+                log_service.add(LOG_TYPE_ACCOUNT, "连续失败自动禁用", {
+                    "token": anonymize_token(access_token),
+                    "consecutive_fail": account.get("consecutive_fail"),
+                    "threshold": config.auto_disable_consecutive_fail,
+                })
+            result = dict(account)
+            result["auto_disabled"] = auto_disabled
+            return result
         return None
 
     def fetch_remote_info(self, access_token: str) -> dict[str, Any]:
