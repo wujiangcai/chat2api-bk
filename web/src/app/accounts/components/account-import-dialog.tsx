@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useRef, useState, type ChangeEvent } from "react";
 import {
   ArrowLeft,
+  Bot,
   ExternalLink,
   FileJson,
   FileText,
@@ -29,7 +30,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { createAccounts, type Account } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type ImportMethod = "menu" | "token" | "session" | "cpa";
+type ImportMethod = "menu" | "token" | "session" | "cpa" | "blackcat";
 
 type AccountImportDialogProps = {
   disabled?: boolean;
@@ -357,7 +358,11 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
       );
     }
 
-    if (method === "cpa") {
+    if (method === "cpa" || method === "blackcat") {
+      const helperText =
+        method === "blackcat"
+          ? "blackcat 运行后会把每个账号的 access_token 输出到 codex_relogin/*.json。多选这些文件即可把 AT 填充进号池（系统自动提取其中的 access_token）。"
+          : "每个文件应为一个 JSON 对象。系统会从对象中自动提取 `access_token` 或 `accessToken`，";
       return (
         <div className="space-y-4">
           <button
@@ -370,10 +375,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           </button>
           <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-5">
             <div className="space-y-2">
-              <div className="text-sm font-medium text-stone-800">多选本地 CPA JSON 文件</div>
-              <div className="text-sm leading-6 text-stone-500">
-                每个文件应为一个 JSON 对象。系统会从对象中自动提取 `access_token` 或 `accessToken`，
-              </div>
+              <div className="text-sm font-medium text-stone-800">多选本地 JSON 文件</div>
+              <div className="text-sm leading-6 text-stone-500">{helperText}</div>
             </div>
             <Button
               type="button"
@@ -424,6 +427,12 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           onClick={() => setMethod("cpa")}
         />
         <MethodCard
+          title="从 blackcat 输出导入 AT"
+          description="blackcat 注册 free 账号并获取 access_token 后，多选其 codex_relogin/*.json 直接填充号池。"
+          icon={Bot}
+          onClick={() => setMethod("blackcat")}
+        />
+        <MethodCard
           title="从远程 CPA 服务器导入"
           description="前往设置页面配置远程 CPA 服务器后再执行导入。"
           icon={Files}
@@ -463,12 +472,14 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
         <DialogContent showCloseButton={false} className="rounded-2xl p-6">
           <DialogHeader className="gap-2">
             <DialogTitle>
-              {method === "menu"
-                ? "导入账户"
-                : method === "token"
-                  ? "导入 Access Token"
-                  : method === "session"
-                    ? "导入 Session JSON"
+            {method === "menu"
+              ? "导入账户"
+              : method === "token"
+                ? "导入 Access Token"
+                : method === "session"
+                  ? "导入 Session JSON"
+                  : method === "blackcat"
+                    ? "从 blackcat 导入 AT"
                     : "导入 CPA JSON"}
             </DialogTitle>
             <DialogDescription className="text-sm leading-6">
@@ -478,7 +489,9 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                   ? "支持手动粘贴或从 TXT 文件导入，一行一个 Token。"
                   : method === "session"
                     ? "粘贴完整 Session JSON，系统会自动提取 accessToken。"
-                    : "支持一次读取多个本地 JSON 文件，并在提交前做数量确认。"}
+                    : method === "blackcat"
+                      ? "多选 blackcat 输出的 JSON 文件，系统会自动提取 access_token 后填充号池。"
+                      : "支持一次读取多个本地 JSON 文件，并在提交前做数量确认。"}
             </DialogDescription>
           </DialogHeader>
 
@@ -513,7 +526,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 导入 JSON
               </Button>
             ) : null}
-            {method === "cpa" ? (
+            {method === "cpa" || method === "blackcat" ? (
               <Button
                 className={cn(
                   "h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800",

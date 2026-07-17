@@ -13,6 +13,7 @@ import {
   Download,
   LoaderCircle,
   Pencil,
+  PenLine,
   RefreshCw,
   Search,
   Trash2,
@@ -41,6 +42,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  batchUpdateAccounts,
   deleteAccounts,
   fetchAccounts,
   refreshAccounts,
@@ -95,6 +97,20 @@ const metricCards = [
 
 function isUnlimitedImageQuotaAccount(account: Account) {
   return account.type === "Pro" || account.type === "ProLite";
+}
+
+// 待清理：额度耗尽(非无限套餐)、异常状态、或失败数明显多于成功数。用于帮助用户快速定位死号。
+function isNeedsAttention(account: Account) {
+  if (account.status === "异常") {
+    return true;
+  }
+  if (!isUnlimitedImageQuotaAccount(account) && (account.quota ?? 0) <= 0 && !account.imageQuotaUnknown) {
+    return true;
+  }
+  if ((account.fail ?? 0) > (account.success ?? 0) && (account.fail ?? 0) > 0) {
+    return true;
+  }
+  return false;
 }
 
 function formatCompact(value: number) {
@@ -187,12 +203,17 @@ function AccountsPageContent() {
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<AccountType | "all">("all");
   const [statusFilter, setStatusFilter] = useState<AccountStatus | "all">("all");
+  const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState("10");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [editType, setEditType] = useState<AccountType>("Free");
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
   const [editQuota, setEditQuota] = useState("0");
+  const [batchEditOpen, setBatchEditOpen] = useState(false);
+  const [batchType, setBatchType] = useState<AccountType | "keep">("keep");
+  const [batchStatus, setBatchStatus] = useState<AccountStatus | "keep">("keep");
+  const [batchQuota, setBatchQuota] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -232,9 +253,10 @@ function AccountsPageContent() {
         normalizedQuery.length === 0 || (account.email ?? "").toLowerCase().includes(normalizedQuery);
       const typeMatched = typeFilter === "all" || account.type === typeFilter;
       const statusMatched = statusFilter === "all" || account.status === statusFilter;
-      return searchMatched && typeMatched && statusMatched;
+      const attentionMatched = !needsAttentionOnly || isNeedsAttention(account);
+      return searchMatched && typeMatched && statusMatched && attentionMatched;
     });
-  }, [accounts, query, statusFilter, typeFilter]);
+  }, [accounts, query, statusFilter, typeFilter, needsAttentionOnly]);
 
   const pageCount = Math.max(1, Math.ceil(filteredAccounts.length / Number(pageSize)));
   const safePage = Math.min(page, pageCount);
@@ -362,6 +384,49 @@ function AccountsPageContent() {
       toast.success("账号信息已更新");
     } catch (error) {
       const message = error instanceof Error ? error.message : "更新账号失败";
+      toast.error(message);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const openBatchEditDialog = () => {
+    if (selectedIds.length === 0) {
+      toast.error("请先选择要修改的账户");
+      return;
+    }
+    setBatchType("keep");
+    setBatchStatus("keep");
+    setBatchQuota("");
+    setBatchEditOpen(true);
+  };
+
+  const handleBatchUpdate = async () => {
+    const updates: { type?: AccountType; status?: AccountStatus; quota?: number } = {};
+    if (batchType !== "keep") updates.type = batchType;
+    if (batchStatus !== "keep") updates.status = batchStatus;
+    if (batchQuota.trim() !== "") {
+      const q = Number(batchQuota);
+      if (Number.isNaN(q) || q < 0) {
+        toast.error("额度必须为非负整数");
+        return;
+      }
+      updates.quota = q;
+    }
+    if (Object.keys(updates).length === 0) {
+      toast.error("请至少选择一项要修改的字段");
+      return;
+    }
+
+    setIsUpdating(true);
+    try {
+      const data = await batchUpdateAccounts(selectedTokens, updates);
+      setAccounts(normalizeAccounts(data.items));
+      setSelectedIds([]);
+      setBatchEditOpen(false);
+      toast.success(`已更新 ${data.updated} 个账户`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "批量修改失败";
       toast.error(message);
     } finally {
       setIsUpdating(false);
@@ -498,6 +563,82 @@ function AccountsPageContent() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={batchEditOpen} onOpenChange={(open) => (!open ? setBatchEditOpen(false) : null)}>
+        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
+          <DialogHeader className="gap-2">
+            <DialogTitle>批量修改账户</DialogTitle>
+            <DialogDescription className="text-sm leading-6">
+              将统一应用到已选中的 {selectedIds.length} 个账户。字段选择「不修改」则保持不变。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">状态</label>
+              <Select value={batchStatus} onValueChange={(value) => setBatchStatus(value as AccountStatus | "keep")}>
+                <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="keep">不修改</SelectItem>
+                  {accountStatusOptions
+                    .filter((option) => option.value !== "all")
+                    .map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">类型</label>
+              <Select value={batchType} onValueChange={(value) => setBatchType(value as AccountType | "keep")}>
+                <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="keep">不修改</SelectItem>
+                  {accountTypeOptions
+                    .filter((option) => option.value !== "all")
+                    .map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">额度（留空表示不修改）</label>
+              <Input
+                value={batchQuota}
+                onChange={(event) => setBatchQuota(event.target.value)}
+                placeholder="例如 50"
+                className="h-11 rounded-xl border-stone-200 bg-white"
+              />
+            </div>
+          </div>
+          <DialogFooter className="pt-2">
+            <Button
+              variant="secondary"
+              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
+              onClick={() => setBatchEditOpen(false)}
+              disabled={isUpdating}
+            >
+              取消
+            </Button>
+            <Button
+              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
+              onClick={() => void handleBatchUpdate()}
+              disabled={isUpdating}
+            >
+              {isUpdating ? <LoaderCircle className="size-4 animate-spin" /> : <PenLine className="size-4" />}
+              应用修改
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={Boolean(deleteRequest)} onOpenChange={(open) => (!open ? setDeleteRequest(null) : null)}>
         <DialogContent showCloseButton={false} className="rounded-2xl p-6">
           <DialogHeader className="gap-2">
@@ -609,6 +750,23 @@ function AccountsPageContent() {
                 ))}
               </SelectContent>
             </Select>
+            <Button
+              type="button"
+              variant="outline"
+              className={cn(
+                "h-10 w-full rounded-xl border-stone-200 lg:w-[150px]",
+                needsAttentionOnly
+                  ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                  : "bg-white/85 text-stone-600 hover:bg-white",
+              )}
+              onClick={() => {
+                setNeedsAttentionOnly((prev) => !prev);
+                setPage(1);
+              }}
+            >
+              <CircleAlert className="size-4" />
+              仅看待清理
+            </Button>
           </div>
         </div>
 
@@ -643,6 +801,15 @@ function AccountsPageContent() {
                 >
                   {isRefreshing ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                   刷新选中账号信息和额度
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-8 rounded-lg px-3 text-stone-700 hover:bg-stone-100"
+                  onClick={openBatchEditDialog}
+                  disabled={selectedTokens.length === 0 || isUpdating}
+                >
+                  <PenLine className="size-4" />
+                  批量修改
                 </Button>
                 <Button
                   variant="ghost"
@@ -743,6 +910,11 @@ function AccountsPageContent() {
                             <StatusIcon className="size-3.5" />
                             {account.status}
                           </Badge>
+                          {isNeedsAttention(account) ? (
+                            <span className="ml-2 rounded-md bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-700">
+                              待清理
+                            </span>
+                          ) : null}
                         </td>
                         <td className="px-4 py-3">
                           <div className="text-xs leading-5 text-stone-500">{account.email ?? "—"}</div>

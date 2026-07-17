@@ -1026,6 +1026,28 @@ export async function updateAccount(
   });
 }
 
+type AccountBatchUpdateResponse = {
+  updated: number;
+  items: Account[];
+};
+
+export async function batchUpdateAccounts(
+  accessTokens: string[],
+  updates: {
+    type?: AccountType;
+    status?: AccountStatus;
+    quota?: number;
+  },
+) {
+  return httpRequest<AccountBatchUpdateResponse>("/api/accounts/batch-update", {
+    method: "POST",
+    body: {
+      access_tokens: accessTokens,
+      ...updates,
+    },
+  });
+}
+
 export async function generateImage(prompt: string, model?: ImageModel, size?: string) {
   return httpRequest<{ created: number; data: Array<{ b64_json: string; revised_prompt?: string }> }>(
     "/v1/images/generations",
