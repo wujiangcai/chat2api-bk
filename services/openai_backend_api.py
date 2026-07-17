@@ -122,7 +122,7 @@ class OpenAIBackendAPI:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
         )
-        fp.setdefault("impersonate", "edge101")
+        fp.setdefault("impersonate", "chrome124")
         fp.setdefault("oai-device-id", new_uuid())
         fp.setdefault("oai-session-id", new_uuid())
         fp.setdefault("sec-ch-ua", '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"')
@@ -575,8 +575,6 @@ class OpenAIBackendAPI:
             content = message.get("content") or {}
             if author.get("role") != "tool":
                 continue
-            if metadata.get("async_task_type") != "image_gen":
-                continue
             if content.get("content_type") != "multimodal_text":
                 continue
             file_ids, sediment_ids = [], []
@@ -589,6 +587,8 @@ class OpenAIBackendAPI:
                 for hit in sed_pat.findall(text):
                     if hit not in sediment_ids:
                         sediment_ids.append(hit)
+            if not file_ids and not sediment_ids:
+                continue
             records.append(
                 {"message_id": message_id, "create_time": message.get("create_time") or 0, "file_ids": file_ids,
                  "sediment_ids": sediment_ids})

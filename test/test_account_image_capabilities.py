@@ -26,6 +26,18 @@ class AccountCapabilityTests(unittest.TestCase):
             )
         )
 
+    def test_paid_accounts_remain_available_when_cached_quota_is_zero(self) -> None:
+        self.assertTrue(
+            AccountService._is_image_account_available(
+                {"status": "正常", "type": "Plus", "image_quota_unknown": False, "quota": 0}
+            )
+        )
+        self.assertFalse(
+            AccountService._is_image_account_available(
+                {"status": "正常", "type": "Free", "image_quota_unknown": False, "quota": 0}
+            )
+        )
+
     def test_prolite_variants_are_normalized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))

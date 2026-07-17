@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import unittest
 
@@ -12,6 +13,7 @@ AUTH_KEY = "chatgpt2api"
 BASE_URL = "http://localhost:8000"
 
 
+@unittest.skipUnless(os.getenv("RUN_INTEGRATION_TESTS") == "1", "integration test: set RUN_INTEGRATION_TESTS=1 and start localhost service")
 class ChatCompletionsTests(unittest.TestCase):
     def test_text_completion_http(self):
         """测试文本对话的非流式 HTTP 调用。"""

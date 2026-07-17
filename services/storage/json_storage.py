@@ -62,6 +62,36 @@ class JSONStorageBackend(StorageBackend):
             encoding="utf-8",
         )
 
+    @staticmethod
+    def _collection_file_name(name: str) -> str:
+        safe_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in str(name or "").strip())
+        if not safe_name:
+            raise ValueError("collection name is required")
+        return f"{safe_name}.json"
+
+    @staticmethod
+    def _load_wrapped_json_list(file_path: Path) -> list[dict[str, Any]]:
+        if not file_path.exists():
+            return []
+        try:
+            data = json.loads(file_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, Exception):
+            return []
+        if isinstance(data, dict):
+            data = data.get("items")
+        return data if isinstance(data, list) else []
+
+    def load_collection(self, name: str) -> list[dict[str, Any]]:
+        return self._load_wrapped_json_list(self.file_path.with_name(self._collection_file_name(name)))
+
+    def save_collection(self, name: str, items: list[dict[str, Any]]) -> None:
+        file_path = self.file_path.with_name(self._collection_file_name(name))
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(
+            json.dumps({"items": items}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
     def health_check(self) -> dict[str, Any]:
         """健康检查"""
         try:

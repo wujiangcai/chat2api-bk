@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, Copy, ImageIcon, LoaderCircle, Maximize2, RefreshCw, Search } from "lucide-react";
 import { toast } from "sonner";
 
@@ -35,7 +35,7 @@ function ImageManagerContent() {
   const safePage = Math.min(page, pageCount);
   const currentRows = items.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-  const loadImages = async () => {
+  const loadImages = useCallback(async () => {
     setIsLoading(true);
     try {
       const data = await fetchManagedImages({ start_date: startDate, end_date: endDate });
@@ -46,7 +46,7 @@ function ImageManagerContent() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [endDate, startDate]);
 
   const clearFilters = () => {
     setStartDate("");
@@ -55,7 +55,7 @@ function ImageManagerContent() {
 
   useEffect(() => {
     void loadImages();
-  }, [startDate, endDate]);
+  }, [loadImages]);
 
   return (
     <section className="space-y-5">

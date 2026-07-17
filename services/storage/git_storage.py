@@ -117,6 +117,22 @@ class GitStorageBackend(StorageBackend):
             print(f"[git-storage] save failed: {e}")
             raise e
 
+    @staticmethod
+    def _collection_file_path(name: str) -> str:
+        safe_name = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in str(name or "").strip())
+        if not safe_name:
+            raise ValueError("collection name is required")
+        return f"{safe_name}.json"
+
+    def load_collection(self, name: str) -> list[dict[str, Any]]:
+        data = self._load_json_value(self._collection_file_path(name))
+        if isinstance(data, dict):
+            data = data.get("items")
+        return data if isinstance(data, list) else []
+
+    def save_collection(self, name: str, items: list[dict[str, Any]]) -> None:
+        self._save_json_file(self._collection_file_path(name), {"items": items}, f"Update {name} collection")
+
     def _load_json_file(self, file_path: str) -> list[dict[str, Any]]:
         data = self._load_json_value(file_path)
         return data if isinstance(data, list) else []

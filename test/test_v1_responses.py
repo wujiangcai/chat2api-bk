@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import unittest
 
@@ -15,6 +16,7 @@ IMAGE_MODEL = "gpt-image-1"
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
 
 
+@unittest.skipUnless(os.getenv("RUN_INTEGRATION_TESTS") == "1", "integration test: set RUN_INTEGRATION_TESTS=1 and start localhost service")
 class ResponsesTests(unittest.TestCase):
     @staticmethod
     def _iter_sse_payloads(response: requests.Response):

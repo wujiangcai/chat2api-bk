@@ -6,8 +6,9 @@ import { Github } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
 import webConfig from "@/constants/common-env";
-import { clearStoredAuthSession, getStoredAuthSession, type StoredAuthSession } from "@/store/auth";
+import { logout } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { clearStoredAuthSession, getStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 
 const adminNavItems = [
   { href: "/image", label: "画图" },
@@ -17,7 +18,11 @@ const adminNavItems = [
   { href: "/settings", label: "设置" },
 ];
 
-const userNavItems = [{ href: "/image", label: "画图" }];
+const userNavItems = [
+  { href: "/image", label: "画图" },
+  { href: "/redeem", label: "充值" },
+  { href: "/support", label: "工单" },
+];
 
 export function TopNav() {
   const pathname = usePathname();
@@ -29,18 +34,12 @@ export function TopNav() {
 
     const load = async () => {
       if (pathname === "/login") {
-        if (!active) {
-          return;
-        }
-        setSession(null);
+        if (active) setSession(null);
         return;
       }
 
       const storedSession = await getStoredAuthSession();
-      if (!active) {
-        return;
-      }
-      setSession(storedSession);
+      if (active) setSession(storedSession);
     };
 
     void load();
@@ -50,6 +49,11 @@ export function TopNav() {
   }, [pathname]);
 
   const handleLogout = async () => {
+    try {
+      await logout();
+    } catch {
+      // Local cleanup below still logs the browser out if the API is unreachable.
+    }
     await clearStoredAuthSession();
     router.replace("/login");
   };
@@ -60,6 +64,8 @@ export function TopNav() {
 
   const navItems = session.role === "admin" ? adminNavItems : userNavItems;
   const roleLabel = session.role === "admin" ? "管理员" : "普通用户";
+  const identityLabel = session.email || session.name || session.subjectId;
+  const quotaLabel = session.role === "user" && session.quotaBalance != null ? `额度 ${session.quotaBalance}` : "";
 
   return (
     <header className="border-b border-stone-100/50">
@@ -101,6 +107,19 @@ export function TopNav() {
           })}
         </div>
         <div className="flex items-center justify-end gap-2 sm:gap-3">
+          {identityLabel ? (
+            <span
+              className="hidden max-w-40 truncate rounded-md bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-500 md:inline-block sm:text-[11px]"
+              title={identityLabel}
+            >
+              {identityLabel}
+            </span>
+          ) : null}
+          {quotaLabel ? (
+            <span className="hidden rounded-md bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-500 sm:inline-block sm:text-[11px]">
+              {quotaLabel}
+            </span>
+          ) : null}
           <span className="hidden rounded-md bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-500 sm:inline-block sm:text-[11px]">
             {roleLabel}
           </span>

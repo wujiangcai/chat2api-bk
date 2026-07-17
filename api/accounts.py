@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from services.auth_service import auth_service
+from services.log_service import LOG_TYPE_ACCOUNT, log_service
+from services.redemption_service import redemption_service
 
 from api.support import (
     require_admin,
@@ -26,11 +28,26 @@ from services.sub2api_service import (
 
 class UserKeyCreateRequest(BaseModel):
     name: str = ""
+    permissions: list[str] | None = None
+    quota_limit: int | None = Field(default=None, ge=0)
+    rate_limit_per_minute: int | None = Field(default=None, ge=0)
+    expires_at: str | None = None
+    metadata: dict[str, object] | None = None
 
 
 class UserKeyUpdateRequest(BaseModel):
     name: str | None = None
     enabled: bool | None = None
+    permissions: list[str] | None = None
+    quota_limit: int | None = Field(default=None, ge=0)
+    quota_unlimited: bool = False
+    rate_limit_per_minute: int | None = Field(default=None, ge=0)
+    rate_limit_unlimited: bool = False
+    expires_at: str | None = None
+    expires_never: bool = False
+    metadata: dict[str, object] | None = None
+    reset_quota_used: bool = False
+    add_quota: int | None = Field(default=None, ge=0)
 
 
 class AccountCreateRequest(BaseModel):
@@ -92,6 +109,72 @@ class Sub2APIImportRequest(BaseModel):
     account_ids: list[str] = Field(default_factory=list)
 
 
+class AdminUserCreateRequest(BaseModel):
+    email: str = ""
+    password: str = Field(..., min_length=8)
+    name: str = ""
+    quota_balance: int = Field(default=0, ge=0)
+
+
+class AdminUserUpdateRequest(BaseModel):
+    name: str | None = None
+    enabled: bool | None = None
+    quota_balance: int | None = Field(default=None, ge=0)
+    package_id: str | None = None
+    package_name: str | None = None
+    package_expires_at: str | None = None
+
+
+class AdminUserPasswordRequest(BaseModel):
+    password: str = Field(..., min_length=8)
+
+
+class AdminUserQuotaRequest(BaseModel):
+    delta: int
+    reason: str = ""
+
+
+class PackageCreateRequest(BaseModel):
+    name: str = ""
+    description: str = ""
+    quota: int = Field(default=0, ge=0)
+    price_cents: int = Field(default=0, ge=0)
+    currency: str = "CNY"
+    valid_days: int | None = Field(default=None, ge=0)
+
+
+class PackageUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    quota: int | None = Field(default=None, ge=0)
+    price_cents: int | None = Field(default=None, ge=0)
+    currency: str | None = None
+    valid_days: int | None = Field(default=None, ge=0)
+    enabled: bool | None = None
+
+
+class CDKCreateRequest(BaseModel):
+    name: str = ""
+    type: str = "quota"
+    count: int = Field(default=1, ge=1, le=500)
+    quota: int = Field(default=0, ge=0)
+    package_id: str | None = None
+    max_redemptions: int = Field(default=1, ge=1)
+    per_user_limit: int = Field(default=1, ge=1)
+    expires_at: str | None = None
+
+
+class CDKUpdateRequest(BaseModel):
+    name: str | None = None
+    enabled: bool | None = None
+    expires_at: str | None = None
+
+
+def _audit_admin_action(action: str, summary: str, **detail: object) -> None:
+    safe_detail = {key: value for key, value in detail.items() if key not in {"token", "password", "code", "raw_key", "access_token"}}
+    log_service.add(LOG_TYPE_ACCOUNT, summary, {"action": action, **safe_detail})
+
+
 def create_router() -> APIRouter:
     router = APIRouter()
 
@@ -103,7 +186,15 @@ def create_router() -> APIRouter:
     @router.post("/api/auth/users")
     async def create_user_key(body: UserKeyCreateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
-        item, raw_key = auth_service.create_key(role="user", name=body.name)
+        item, raw_key = auth_service.create_key(
+            role="user",
+            name=body.name,
+            permissions=body.permissions,
+            quota_limit=body.quota_limit,
+            rate_limit_per_minute=body.rate_limit_per_minute,
+            expires_at=body.expires_at,
+            metadata=body.metadata,
+        )
         return {"item": item, "key": raw_key, "items": auth_service.list_keys(role="user")}
 
     @router.post("/api/auth/users/{key_id}")
@@ -118,9 +209,23 @@ def create_router() -> APIRouter:
             for key, value in {
                 "name": body.name,
                 "enabled": body.enabled,
+                "permissions": body.permissions,
+                "quota_limit": body.quota_limit,
+                "rate_limit_per_minute": body.rate_limit_per_minute,
+                "expires_at": body.expires_at,
+                "metadata": body.metadata,
+                "add_quota": body.add_quota,
             }.items()
             if value is not None
         }
+        if body.reset_quota_used:
+            updates["reset_quota_used"] = True
+        if body.quota_unlimited:
+            updates["quota_limit"] = None
+        if body.rate_limit_unlimited:
+            updates["rate_limit_per_minute"] = None
+        if body.expires_never:
+            updates["expires_at"] = None
         if not updates:
             raise HTTPException(status_code=400, detail={"error": "no updates provided"})
         item = auth_service.update_key(key_id, updates, role="user")
@@ -134,6 +239,137 @@ def create_router() -> APIRouter:
         if not auth_service.delete_key(key_id, role="user"):
             raise HTTPException(status_code=404, detail={"error": "user key not found"})
         return {"items": auth_service.list_keys(role="user")}
+
+    @router.get("/api/admin/users")
+    async def list_registered_users(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return {"items": auth_service.list_users()}
+
+    @router.post("/api/admin/users")
+    async def create_registered_user(body: AdminUserCreateRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            item, token, key = auth_service.register_user(body.email, body.password, body.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        if body.quota_balance:
+            item = auth_service.adjust_user_quota(str(item.get("id")), body.quota_balance, "admin-create", ref_type="admin_user_create") or item
+        _audit_admin_action("user.create", "创建注册用户", user_id=item.get("id"), email=item.get("email"), initial_quota=body.quota_balance, quota_balance=item.get("quota_balance"))
+        return {"item": item, "token": token, "key": key, "items": auth_service.list_users()}
+
+    @router.post("/api/admin/users/{user_id}")
+    async def update_registered_user(user_id: str, body: AdminUserUpdateRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        updates = {key: value for key, value in body.model_dump(mode="python").items() if value is not None}
+        if not updates:
+            raise HTTPException(status_code=400, detail={"error": "no updates provided"})
+        item = auth_service.update_user(user_id, updates)
+        if item is None:
+            raise HTTPException(status_code=404, detail={"error": "user not found"})
+        _audit_admin_action("user.update", "更新注册用户", user_id=user_id, fields=sorted(updates.keys()))
+        return {"item": item, "items": auth_service.list_users()}
+
+    @router.post("/api/admin/users/{user_id}/password")
+    async def reset_registered_user_password(user_id: str, body: AdminUserPasswordRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            item = auth_service.update_user(user_id, {"password": body.password})
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail={"error": "user not found"})
+        _audit_admin_action("user.password_reset", "重置注册用户密码", user_id=user_id)
+        return {"item": item}
+
+    @router.post("/api/admin/users/{user_id}/quota")
+    async def adjust_registered_user_quota(user_id: str, body: AdminUserQuotaRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        item = auth_service.adjust_user_quota(user_id, body.delta, body.reason or "admin-adjust", ref_type="admin_quota_adjust")
+        if item is None:
+            raise HTTPException(status_code=404, detail={"error": "user not found"})
+        _audit_admin_action("user.quota_adjust", "调整注册用户额度", user_id=user_id, delta=body.delta, reason=body.reason)
+        return {"item": item, "items": auth_service.list_users()}
+
+    @router.get("/api/admin/packages")
+    async def list_packages(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return {"items": redemption_service.list_packages()}
+
+    @router.post("/api/admin/packages")
+    async def create_package(body: PackageCreateRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        item = redemption_service.create_package(
+            name=body.name,
+            description=body.description,
+            quota=body.quota,
+            valid_days=body.valid_days,
+            price_cents=body.price_cents,
+            currency=body.currency,
+        )
+        _audit_admin_action(
+            "package.create",
+            "创建套餐",
+            package_id=item.get("id"),
+            name=item.get("name"),
+            quota=item.get("quota"),
+            price_cents=item.get("price_cents"),
+            currency=item.get("currency"),
+            valid_days=item.get("valid_days"),
+        )
+        return {"item": item, "items": redemption_service.list_packages()}
+
+    @router.post("/api/admin/packages/{package_id}")
+    async def update_package(package_id: str, body: PackageUpdateRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        updates = {key: value for key, value in body.model_dump(mode="python").items() if value is not None}
+        if not updates:
+            raise HTTPException(status_code=400, detail={"error": "no updates provided"})
+        item = redemption_service.update_package(package_id, updates)
+        if item is None:
+            raise HTTPException(status_code=404, detail={"error": "package not found"})
+        _audit_admin_action("package.update", "更新套餐", package_id=package_id, fields=sorted(updates.keys()))
+        return {"item": item, "items": redemption_service.list_packages()}
+
+    @router.get("/api/admin/cdks")
+    async def list_cdks(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return {"items": redemption_service.list_cdks()}
+
+    @router.post("/api/admin/cdks")
+    async def create_cdks(body: CDKCreateRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            result = redemption_service.create_cdks(**body.model_dump(mode="python"))
+            _audit_admin_action("cdk.create", "创建 CDK", name=body.name, type=body.type, count=len(result.get("created", [])), package_id=body.package_id, quota=body.quota)
+            return result
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+
+    @router.post("/api/admin/cdks/{cdk_id}")
+    async def update_cdk(cdk_id: str, body: CDKUpdateRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        updates = {key: value for key, value in body.model_dump(mode="python").items() if value is not None}
+        if not updates:
+            raise HTTPException(status_code=400, detail={"error": "no updates provided"})
+        item = redemption_service.update_cdk(cdk_id, updates)
+        if item is None:
+            raise HTTPException(status_code=404, detail={"error": "cdk not found"})
+        _audit_admin_action("cdk.update", "更新 CDK", cdk_id=cdk_id, fields=sorted(updates.keys()))
+        return {"item": item, "items": redemption_service.list_cdks()}
+
+    @router.get("/api/admin/redemptions")
+    async def list_redemptions(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return {"items": redemption_service.list_redemptions()}
+
+    @router.get("/api/admin/quota-ledger")
+    async def list_quota_ledger(
+            user_id: str = "",
+            limit: int = Query(default=200, ge=1, le=1000),
+            authorization: str | None = Header(default=None),
+    ):
+        require_admin(authorization)
+        return {"items": auth_service.list_quota_ledger(user_id=user_id.strip() or None, limit=limit)}
 
     @router.get("/api/accounts")
     async def get_accounts(authorization: str | None = Header(default=None)):

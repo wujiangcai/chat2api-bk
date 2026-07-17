@@ -1,0 +1,26 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$CADDY_SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Cross-Origin-Opener-Policy "same-origin"
+	}
+
+	# Single-node MinIO public asset path. For R2/S3/CDN production, point
+	# OBJECT_STORAGE_PUBLIC_BASE_URL at the external bucket/CDN instead.
+	handle_path /object-storage/* {
+		reverse_proxy minio:9000
+	}
+
+	handle {
+		reverse_proxy api:80
+	}
+}

@@ -8,9 +8,21 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from api.support import raise_image_quota_error, require_identity, resolve_image_base_url
+from api.support import (
+    check_quota,
+    check_rate_limit,
+    consume_quota,
+    count_success_items,
+    raise_image_quota_error,
+    refund_quota,
+    require_identity,
+    require_permission,
+    reserve_quota,
+    resolve_image_base_url,
+)
 from services.account_service import account_service
 from services.chatgpt_service import ChatGPTService, ImageGenerationError
+from services.image_asset_service import image_asset_service
 from services.log_service import (
     LOG_TYPE_CALL,
     log_service,
@@ -91,7 +103,38 @@ def _log_call(summary: str, identity: dict[str, object], endpoint: str, model: s
     log_service.add(LOG_TYPE_CALL, summary, detail)
 
 
-def _stream_with_log(items, summary: str, identity: dict[str, object], endpoint: str, model: str, started: float):
+def _archive_image_assets(
+        identity: dict[str, object],
+        result: object,
+        *,
+        endpoint: str,
+        model: str,
+        prompt: str,
+        base_url: str,
+) -> None:
+    try:
+        image_asset_service.archive_result(
+            owner=identity,
+            result=result,
+            source=endpoint,
+            model=model,
+            prompt=prompt,
+            base_url=base_url,
+        )
+    except Exception as exc:
+        _log_call("图片资产归档失败", identity, endpoint, model, time.time(), {"error": str(exc)}, "failed")
+
+
+def _stream_with_log(
+        items,
+        summary: str,
+        identity: dict[str, object],
+        endpoint: str,
+        model: str,
+        started: float,
+        quota_fallback: int = 0,
+        reserved_quota: int = 0,
+):
     urls: list[str] = []
     failed = False
     try:
@@ -100,11 +143,15 @@ def _stream_with_log(items, summary: str, identity: dict[str, object], endpoint:
             yield item
     except Exception:
         failed = True
+        refund_quota(identity, reserved_quota)
         _log_call(summary.replace("结束", "失败"), identity, endpoint, model, started, {"urls": list(dict.fromkeys(urls))}, "failed")
         raise
     finally:
         if not failed:
-            _log_call(summary, identity, endpoint, model, started, {"urls": list(dict.fromkeys(urls))})
+            unique_urls = list(dict.fromkeys(urls))
+            _log_call(summary, identity, endpoint, model, started, {"urls": unique_urls})
+            if reserved_quota <= 0 and quota_fallback > 0:
+                consume_quota(identity, len(unique_urls) or quota_fallback)
 
 
 def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
@@ -124,13 +171,16 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
             request: Request,
             authorization: str | None = Header(default=None),
     ):
-        identity = require_identity(authorization)
+        identity = require_permission(authorization, "image.generate")
+        check_rate_limit(identity, body.n)
+        reserved_quota = reserve_quota(identity, body.n)
         started = time.time()
         base_url = resolve_image_base_url(request)
         if body.stream:
             try:
                 await run_in_threadpool(account_service.get_available_access_token)
             except RuntimeError as exc:
+                refund_quota(identity, reserved_quota)
                 raise_image_quota_error(exc)
             return StreamingResponse(
                 sse_json_stream(
@@ -143,6 +193,8 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
                         "/v1/images/generations",
                         body.model,
                         started,
+                        body.n,
+                        reserved_quota,
                     )
                 ),
                 media_type="text/event-stream",
@@ -151,11 +203,19 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
             result = await run_in_threadpool(
                 chatgpt_service.generate_with_pool, body.prompt, body.model, body.n, body.size, body.response_format, base_url
             )
+            await run_in_threadpool(_archive_image_assets, identity, result, endpoint="/v1/images/generations", model=body.model, prompt=body.prompt, base_url=base_url)
             _log_call("文生图调用完成", identity, "/v1/images/generations", body.model, started, result)
+            if reserved_quota <= 0:
+                consume_quota(identity, count_success_items(result, body.n))
             return result
         except ImageGenerationError as exc:
+            refund_quota(identity, reserved_quota)
             _log_call("文生图调用失败", identity, "/v1/images/generations", body.model, started, {"error": str(exc)}, "failed")
             raise_image_quota_error(exc)
+        except Exception as exc:
+            refund_quota(identity, reserved_quota)
+            _log_call("文生图调用失败", identity, "/v1/images/generations", body.model, started, {"error": str(exc)}, "failed")
+            raise
 
     @router.post("/v1/images/edits")
     async def edit_images(
@@ -170,10 +230,11 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
             response_format: str = Form(default="b64_json"),
             stream: bool | None = Form(default=None),
     ):
-        identity = require_identity(authorization)
-        started = time.time()
+        identity = require_permission(authorization, "image.edit")
         if n < 1 or n > 4:
             raise HTTPException(status_code=400, detail={"error": "n must be between 1 and 4"})
+        check_rate_limit(identity, n)
+        started = time.time()
         uploads = [*(image or []), *(image_list or [])]
         if not uploads:
             raise HTTPException(status_code=400, detail={"error": "image file is required"})
@@ -184,8 +245,10 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
             if not image_data:
                 raise HTTPException(status_code=400, detail={"error": "image file is empty"})
             images.append((image_data, upload.filename or "image.png", upload.content_type or "image/png"))
+        reserved_quota = reserve_quota(identity, n)
         if stream:
             if not account_service.has_available_account():
+                refund_quota(identity, reserved_quota)
                 raise_image_quota_error(RuntimeError("no available image quota"))
             return StreamingResponse(
                 sse_json_stream(_stream_with_log(
@@ -195,6 +258,8 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
                     "/v1/images/edits",
                     model,
                     started,
+                    n,
+                    reserved_quota,
                 )),
                 media_type="text/event-stream",
             )
@@ -202,15 +267,24 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
             result = await run_in_threadpool(
                 chatgpt_service.edit_with_pool, prompt, images, model, n, size, response_format, base_url
             )
+            await run_in_threadpool(_archive_image_assets, identity, result, endpoint="/v1/images/edits", model=model, prompt=prompt, base_url=base_url)
             _log_call("图生图调用完成", identity, "/v1/images/edits", model, started, result)
+            if reserved_quota <= 0:
+                consume_quota(identity, count_success_items(result, n))
             return result
         except ImageGenerationError as exc:
+            refund_quota(identity, reserved_quota)
             _log_call("图生图调用失败", identity, "/v1/images/edits", model, started, {"error": str(exc)}, "failed")
             raise_image_quota_error(exc)
+        except Exception as exc:
+            refund_quota(identity, reserved_quota)
+            _log_call("图生图调用失败", identity, "/v1/images/edits", model, started, {"error": str(exc)}, "failed")
+            raise
 
     @router.post("/v1/chat/completions")
     async def create_chat_completion(body: ChatCompletionRequest, authorization: str | None = Header(default=None)):
-        identity = require_identity(authorization)
+        identity = require_permission(authorization, "chat.completions")
+        check_rate_limit(identity, 1)
         started = time.time()
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
@@ -234,7 +308,8 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
 
     @router.post("/v1/responses")
     async def create_response(body: ResponseCreateRequest, authorization: str | None = Header(default=None)):
-        identity = require_identity(authorization)
+        identity = require_permission(authorization, "responses.create")
+        check_rate_limit(identity, 1)
         started = time.time()
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")
@@ -258,7 +333,8 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
             x_api_key: str | None = Header(default=None, alias="x-api-key"),
             anthropic_version: str | None = Header(default=None, alias="anthropic-version"),
     ):
-        identity = require_identity(authorization or (f"Bearer {x_api_key}" if x_api_key else None))
+        identity = require_permission(authorization or (f"Bearer {x_api_key}" if x_api_key else None), "messages.create")
+        check_rate_limit(identity, 1)
         started = time.time()
         payload = body.model_dump(mode="python")
         model = str(payload.get("model") or "auto")

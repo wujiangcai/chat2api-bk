@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 
 from fastapi import HTTPException, Request
 
 from services.account_service import account_service
 from services.auth_service import auth_service
 from services.config import config
+from services.rate_limit_service import create_rate_limiter_from_env
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 WEB_DIST_DIR = BASE_DIR / "web_dist"
+
+_rate_limit_lock = Lock()
+_recent_usage: dict[str, list[float]] = {}
+_api_rate_limiter = create_rate_limiter_from_env(namespace="api-keys", memory_bucket=_recent_usage)
 
 
 def extract_bearer_token(authorization: str | None) -> str:
@@ -23,7 +29,7 @@ def extract_bearer_token(authorization: str | None) -> str:
 def _legacy_admin_identity(token: str) -> dict[str, object] | None:
     auth_key = str(config.auth_key or "").strip()
     if auth_key and token == auth_key:
-        return {"id": "admin", "name": "管理员", "role": "admin"}
+        return {"id": "admin", "name": "管理员", "role": "admin", "permissions": ["*"]}
     return None
 
 
@@ -32,6 +38,8 @@ def require_identity(authorization: str | None) -> dict[str, object]:
     identity = _legacy_admin_identity(token) or auth_service.authenticate(token)
     if identity is None:
         raise HTTPException(status_code=401, detail={"error": "authorization is invalid"})
+    if auth_service.is_expired(identity):
+        raise HTTPException(status_code=403, detail={"error": "authorization is expired"})
     return identity
 
 
@@ -44,6 +52,91 @@ def require_admin(authorization: str | None) -> dict[str, object]:
     if identity.get("role") != "admin":
         raise HTTPException(status_code=403, detail={"error": "admin permission required"})
     return identity
+
+
+def require_permission(authorization: str | None, permission: str) -> dict[str, object]:
+    identity = require_identity(authorization)
+    if not auth_service.has_permission(identity, permission):
+        raise HTTPException(status_code=403, detail={"error": f"permission required: {permission}"})
+    return identity
+
+
+def check_quota(identity: dict[str, object], units: int) -> None:
+    if not auth_service.check_quota(identity, units):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "quota exceeded",
+                "quota_limit": identity.get("quota_limit"),
+                "quota_used": identity.get("quota_used"),
+                "quota_remaining": identity.get("quota_remaining"),
+                "quota_balance": identity.get("quota_balance"),
+            },
+        )
+
+
+def reserve_quota(identity: dict[str, object], units: int) -> int:
+    if identity.get("role") == "admin":
+        return 0
+    user_id = str(identity.get("user_id") or "").strip()
+    requested = max(1, int(units or 1))
+    if user_id:
+        if not auth_service.try_consume_user_quota(user_id, requested):
+            raise HTTPException(
+                status_code=429,
+                detail={"error": "quota exceeded", "quota_balance": identity.get("quota_balance")},
+            )
+        return requested
+    check_quota(identity, requested)
+    return 0
+
+
+def refund_quota(identity: dict[str, object], units: int) -> None:
+    user_id = str(identity.get("user_id") or "").strip()
+    if user_id and units > 0:
+        auth_service.refund_user_quota(user_id, units)
+
+
+def consume_quota(identity: dict[str, object], units: int) -> None:
+    if identity.get("role") == "admin":
+        return
+    user_id = str(identity.get("user_id") or "").strip()
+    if user_id:
+        return
+    auth_service.consume_quota(str(identity.get("id") or ""), units)
+
+
+def check_rate_limit(identity: dict[str, object], units: int = 1) -> None:
+    if identity.get("role") == "admin":
+        return
+    raw_limit = identity.get("rate_limit_per_minute")
+    if raw_limit is None:
+        return
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return
+    if limit <= 0:
+        return
+    key = str(identity.get("id") or identity.get("name") or "unknown")
+    requested = max(1, int(units or 1))
+    result = _api_rate_limiter.allow(key, limit, window_seconds=60, cost=requested)
+    if not result.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={"error": f"rate limit exceeded: max {limit} unit(s) per minute"},
+            headers={"Retry-After": str(result.retry_after_seconds or 60)},
+        )
+
+
+def count_success_items(result: object, fallback: int) -> int:
+    if not isinstance(result, dict):
+        return max(0, int(fallback or 0))
+    items = result.get("data")
+    if not isinstance(items, list):
+        return 0 if result.get("error") else max(0, int(fallback or 0))
+    count = sum(1 for item in items if isinstance(item, dict) and (item.get("b64_json") or item.get("url")) and not item.get("error"))
+    return count if count > 0 else 0
 
 
 def resolve_image_base_url(request: Request) -> str:

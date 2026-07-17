@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Toaster } from "sonner";
 import "./globals.css";
 import { TopNav } from "@/components/top-nav";
@@ -27,6 +28,13 @@ export default function RootLayout({
           <div className="mx-auto flex max-w-[1440px] flex-col gap-5">
             <TopNav />
             {children}
+            <footer className="flex flex-wrap items-center justify-center gap-3 pb-4 text-xs text-stone-400">
+              <Link href="/legal/terms" className="transition hover:text-stone-700">用户协议</Link>
+              <span>/</span>
+              <Link href="/legal/privacy" className="transition hover:text-stone-700">隐私政策</Link>
+              <span>/</span>
+              <Link href="/legal/refund" className="transition hover:text-stone-700">退款说明</Link>
+            </footer>
           </div>
         </main>
       </body>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import { toast } from "sonner";
 
@@ -12,18 +12,43 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { fetchSystemLogs, type SystemLog } from "@/lib/api";
+import { fetchAuditLogs, fetchSystemLogs, type AuditLog, type SystemLog } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
 const LogType = {
   Call: "call",
   Account: "account",
+  Audit: "audit",
 } as const;
+
+type LogTypeValue = (typeof LogType)[keyof typeof LogType];
 
 const typeLabels: Record<string, string> = {
   [LogType.Call]: "调用日志",
   [LogType.Account]: "账号管理日志",
+  [LogType.Audit]: "审计日志",
 };
+
+function auditLogToSystemLog(item: AuditLog): SystemLog {
+  return {
+    time: item.created_at,
+    type: LogType.Audit,
+    summary: item.summary || item.action,
+    detail: {
+      action: item.action,
+      status: item.status,
+      actor_type: item.actor?.type,
+      actor_id: item.actor?.id,
+      actor_email: item.actor?.email,
+      target_type: item.target?.type,
+      target_id: item.target?.id,
+      ip: item.request?.ip,
+      method: item.request?.method,
+      path: item.request?.path,
+      ...(item.detail || {}),
+    },
+  };
+}
 
 function getDetailText(item: SystemLog, key: string) {
   const value = item.detail?.[key];
@@ -49,7 +74,7 @@ function getStatus(item: SystemLog) {
 
 function LogsContent() {
   const [items, setItems] = useState<SystemLog[]>([]);
-  const [type, setType] = useState(LogType.Call);
+  const [type, setType] = useState<LogTypeValue>(LogType.Call);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [detailLog, setDetailLog] = useState<SystemLog | null>(null);
@@ -65,18 +90,23 @@ function LogsContent() {
   const safePage = Math.min(page, pageCount);
   const currentRows = items.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-  const loadLogs = async () => {
+  const loadLogs = useCallback(async () => {
     setIsLoading(true);
     try {
-      const data = await fetchSystemLogs({ type, start_date: startDate, end_date: endDate });
-      setItems(data.items);
+      if (type === LogType.Audit) {
+        const data = await fetchAuditLogs({ start_date: startDate, end_date: endDate, limit: 500 });
+        setItems(data.items.map(auditLogToSystemLog));
+      } else {
+        const data = await fetchSystemLogs({ type, start_date: startDate, end_date: endDate });
+        setItems(data.items);
+      }
       setPage(1);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "加载日志失败");
     } finally {
-    setIsLoading(false);
+      setIsLoading(false);
     }
-  };
+  }, [endDate, startDate, type]);
 
   const clearFilters = () => {
     setStartDate("");
@@ -85,7 +115,7 @@ function LogsContent() {
 
   useEffect(() => {
     void loadLogs();
-  }, [type, startDate, endDate]);
+  }, [loadLogs]);
 
   return (
     <section className="space-y-5">
@@ -95,11 +125,12 @@ function LogsContent() {
           <h1 className="text-2xl font-semibold tracking-tight">日志管理</h1>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Select value={type} onValueChange={setType}>
+          <Select value={type} onValueChange={(value) => setType(value as LogTypeValue)}>
             <SelectTrigger className="h-10 w-[150px] rounded-xl border-stone-200 bg-white"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value={LogType.Call}>调用日志</SelectItem>
               <SelectItem value={LogType.Account}>账号管理日志</SelectItem>
+              <SelectItem value={LogType.Audit}>审计日志</SelectItem>
             </SelectContent>
           </Select>
           <DateRangeFilter startDate={startDate} endDate={endDate} onChange={(start, end) => { setStartDate(start); setEndDate(end); }} />

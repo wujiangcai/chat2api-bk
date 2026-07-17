@@ -29,6 +29,13 @@ def _is_invalid_auth_key(value: object) -> bool:
     return _normalize_auth_key(value) == ""
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _read_json_object(path: Path, *, name: str) -> dict[str, object]:
     if not path.exists():
         return {}
@@ -72,6 +79,7 @@ class ConfigStore:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.data = self._load()
         self._storage_backend: StorageBackend | None = None
+        self._object_storage_backend = None
         if _is_invalid_auth_key(self.auth_key):
             raise ValueError(
                 "❌ auth-key 未设置！\n"
@@ -132,6 +140,12 @@ class ConfigStore:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    @property
+    def assets_dir(self) -> Path:
+        path = DATA_DIR / "assets"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def cleanup_old_images(self) -> int:
         cutoff = time.time() - self.image_retention_days * 86400
         removed = 0
@@ -162,11 +176,75 @@ class ConfigStore:
             return "0.0.0"
         return value or "0.0.0"
 
+    @property
+    def web_allowed_origins(self) -> list[str]:
+        raw = os.getenv("WEB_ALLOWED_ORIGINS") or self.data.get("web_allowed_origins") or self.data.get("allowed_origins") or ""
+        if isinstance(raw, list):
+            values = raw
+        else:
+            values = str(raw or "").split(",")
+        origins = []
+        for value in values:
+            origin = str(value or "").strip().rstrip("/")
+            if origin and origin not in origins:
+                origins.append(origin)
+        if origins:
+            return origins
+        if self.is_production:
+            return []
+        return ["http://127.0.0.1:3000", "http://localhost:3000"]
+
+    @property
+    def is_production(self) -> bool:
+        raw = os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or os.getenv("NODE_ENV") or self.data.get("app_env") or ""
+        return str(raw).strip().lower() in {"prod", "production"}
+
+    @property
+    def security_headers_enabled(self) -> bool:
+        return _env_bool("SECURITY_HEADERS_ENABLED", True)
+
+    @property
+    def hsts_enabled(self) -> bool:
+        default = self.is_production or self.base_url.startswith("https://")
+        return _env_bool("ENABLE_HSTS", default)
+
+    @property
+    def hsts_max_age_seconds(self) -> int:
+        try:
+            return max(0, int(os.getenv("HSTS_MAX_AGE_SECONDS") or self.data.get("hsts_max_age_seconds") or 31536000))
+        except (TypeError, ValueError):
+            return 31536000
+
+    @property
+    def force_https(self) -> bool:
+        return _env_bool("FORCE_HTTPS", False)
+
+    @property
+    def content_security_policy(self) -> str:
+        configured = str(os.getenv("CONTENT_SECURITY_POLICY") or self.data.get("content_security_policy") or "").strip()
+        if configured:
+            return configured
+        return (
+            "default-src 'self'; "
+            "base-uri 'self'; "
+            "object-src 'none'; "
+            "frame-ancestors 'none'; "
+            "img-src 'self' data: blob: https:; "
+            "font-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+            "connect-src 'self' https: ws: wss:"
+        )
+
     def get(self) -> dict[str, object]:
         data = dict(self.data)
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
         data["image_retention_days"] = self.image_retention_days
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
+        data["web_allowed_origins"] = self.web_allowed_origins
+        data["security_headers_enabled"] = self.security_headers_enabled
+        data["hsts_enabled"] = self.hsts_enabled
+        data["force_https"] = self.force_https
         data.pop("auth-key", None)
         return data
 
@@ -186,6 +264,13 @@ class ConfigStore:
             from services.storage.factory import create_storage_backend
             self._storage_backend = create_storage_backend(DATA_DIR)
         return self._storage_backend
+
+    def get_object_storage_backend(self):
+        """获取对象存储后端实例（单例）"""
+        if self._object_storage_backend is None:
+            from services.object_storage import create_object_storage_from_env
+            self._object_storage_backend = create_object_storage_from_env(self.assets_dir)
+        return self._object_storage_backend
 
 
 config = ConfigStore(CONFIG_FILE)

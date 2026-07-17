@@ -6,10 +6,14 @@ import { LoaderCircle } from "lucide-react";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
 import { ConfigCard } from "./components/config-card";
+import { BusinessReportCard } from "./components/business-report-card";
+import { CommercialManagementCard } from "./components/commercial-management-card";
 import { CPAPoolDialog } from "./components/cpa-pool-dialog";
 import { CPAPoolsCard } from "./components/cpa-pools-card";
 import { ImportBrowserDialog } from "./components/import-browser-dialog";
+import { ProductionReadinessCard } from "./components/production-readiness-card";
 import { SettingsHeader } from "./components/settings-header";
+import { SupportTicketsCard } from "./components/support-tickets-card";
 import { Sub2APIConnections } from "./components/sub2api-connections";
 import { UserKeysCard } from "./components/user-keys-card";
 import { useSettingsStore } from "./store";
@@ -52,7 +56,11 @@ function SettingsPageContent() {
       <SettingsDataController />
       <SettingsHeader />
       <section className="space-y-6">
+        <ProductionReadinessCard />
+        <BusinessReportCard />
         <ConfigCard />
+        <CommercialManagementCard />
+        <SupportTicketsCard />
         <UserKeysCard />
         <CPAPoolsCard />
         <Sub2APIConnections />

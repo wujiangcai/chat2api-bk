@@ -25,20 +25,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 安装系统依赖
-# - git: Git 存储后端需要
-# - libpq-dev: PostgreSQL 客户端库
-# - gcc: 编译 psycopg2-binary 需要
+# System dependencies:
+# - git: required by the Git storage backend
+# - libpq-dev/postgresql-client: PostgreSQL runtime and pg_dump backups
+# - gcc: needed when compiling selected Python dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     libpq-dev \
+    postgresql-client \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+# Production images include Redis queue and S3/R2/MinIO object-storage deps
+# so enabling IMAGE_JOB_QUEUE_BACKEND=redis or OBJECT_STORAGE_BACKEND=s3/r2/minio works out of the box.
+RUN uv sync --no-dev --no-install-project --extra s3 --extra redis
 
 COPY main.py ./
 COPY config.json ./

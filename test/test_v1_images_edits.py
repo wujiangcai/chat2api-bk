@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import unittest
 from pathlib import Path
@@ -35,6 +36,7 @@ def summarize_chunk(chunk: dict[str, object]) -> dict[str, object]:
     }
 
 
+@unittest.skipUnless(os.getenv("RUN_INTEGRATION_TESTS") == "1", "integration test: set RUN_INTEGRATION_TESTS=1 and start localhost service")
 class ImageEditsTests(unittest.TestCase):
     def test_image_edit_http(self):
         """测试图片编辑的非流式 HTTP 调用。"""

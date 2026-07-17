@@ -5,10 +5,15 @@ import localforage from "localforage";
 export type AuthRole = "admin" | "user";
 
 export type StoredAuthSession = {
-  key: string;
+  key?: string;
+  sessionMode?: "token" | "cookie";
   role: AuthRole;
   subjectId: string;
+  keyId?: string;
+  email?: string;
   name: string;
+  quotaBalance?: number | null;
+  packageName?: string | null;
 };
 
 export const AUTH_KEY_STORAGE_KEY = "chatgpt2api_auth_key";
@@ -26,16 +31,22 @@ function normalizeSession(value: unknown, fallbackKey = ""): StoredAuthSession |
 
   const candidate = value as Partial<StoredAuthSession>;
   const key = String(candidate.key || fallbackKey || "").trim();
+  const sessionMode = candidate.sessionMode === "cookie" ? "cookie" : "token";
   const role = candidate.role === "admin" || candidate.role === "user" ? candidate.role : null;
-  if (!key || !role) {
+  if ((!key && sessionMode !== "cookie") || !role) {
     return null;
   }
 
   return {
     key,
+    sessionMode,
     role,
     subjectId: String(candidate.subjectId || "").trim(),
+    keyId: String(candidate.keyId || "").trim() || undefined,
+    email: String(candidate.email || "").trim() || undefined,
     name: String(candidate.name || "").trim(),
+    quotaBalance: typeof candidate.quotaBalance === "number" ? candidate.quotaBalance : null,
+    packageName: typeof candidate.packageName === "string" ? candidate.packageName : null,
   };
 }
 
@@ -45,6 +56,10 @@ export function getDefaultRouteForRole(role: AuthRole) {
 
 export async function getStoredAuthKey() {
   if (typeof window === "undefined") {
+    return "";
+  }
+  const storedSession = await authStorage.getItem<StoredAuthSession>(AUTH_SESSION_STORAGE_KEY);
+  if (storedSession?.sessionMode === "cookie") {
     return "";
   }
   const value = await authStorage.getItem<string>(AUTH_KEY_STORAGE_KEY);
@@ -63,7 +78,9 @@ export async function getStoredAuthSession() {
 
   const normalizedSession = normalizeSession(storedSession, String(storedKey || ""));
   if (normalizedSession) {
-    if (normalizedSession.key !== String(storedKey || "").trim()) {
+    if (normalizedSession.sessionMode === "cookie") {
+      await authStorage.removeItem(AUTH_KEY_STORAGE_KEY);
+    } else if (normalizedSession.key !== String(storedKey || "").trim()) {
       await authStorage.setItem(AUTH_KEY_STORAGE_KEY, normalizedSession.key);
     }
     return normalizedSession;
@@ -82,8 +99,16 @@ export async function setStoredAuthSession(session: StoredAuthSession) {
     return;
   }
 
+  if (normalizedSession.sessionMode === "cookie") {
+    await Promise.all([
+      authStorage.removeItem(AUTH_KEY_STORAGE_KEY),
+      authStorage.setItem(AUTH_SESSION_STORAGE_KEY, normalizedSession),
+    ]);
+    return;
+  }
+
   await Promise.all([
-    authStorage.setItem(AUTH_KEY_STORAGE_KEY, normalizedSession.key),
+    authStorage.setItem(AUTH_KEY_STORAGE_KEY, normalizedSession.key || ""),
     authStorage.setItem(AUTH_SESSION_STORAGE_KEY, normalizedSession),
   ]);
 }

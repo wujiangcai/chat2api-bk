@@ -197,6 +197,7 @@ function AccountsPageContent() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [deleteRequest, setDeleteRequest] = useState<{ tokens: string[]; title: string; description: string } | null>(null);
 
   const loadAccounts = async (silent = false) => {
     if (!silent) {
@@ -276,6 +277,18 @@ function AccountsPageContent() {
     return items;
   }, [pageCount, safePage]);
 
+  const openDeleteDialog = (tokens: string[], title = "删除账户") => {
+    if (tokens.length === 0) {
+      toast.error("请先选择要删除的账户");
+      return;
+    }
+    setDeleteRequest({
+      tokens,
+      title,
+      description: `将删除 ${tokens.length} 个号池账号。此操作会移除本地保存的 token，不能在页面内撤销。`,
+    });
+  };
+
   const handleDeleteTokens = async (tokens: string[]) => {
     if (tokens.length === 0) {
       toast.error("请先选择要删除的账户");
@@ -287,6 +300,7 @@ function AccountsPageContent() {
       const data = await deleteAccounts(tokens);
       setAccounts(normalizeAccounts(data.items));
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.id === id)));
+      setDeleteRequest(null);
       toast.success(`删除 ${data.removed ?? 0} 个账户`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "删除账户失败";
@@ -484,6 +498,35 @@ function AccountsPageContent() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={Boolean(deleteRequest)} onOpenChange={(open) => (!open ? setDeleteRequest(null) : null)}>
+        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
+          <DialogHeader className="gap-2">
+            <DialogTitle>{deleteRequest?.title}</DialogTitle>
+            <DialogDescription className="text-sm leading-6">
+              {deleteRequest?.description}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="pt-2">
+            <Button
+              variant="secondary"
+              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
+              onClick={() => setDeleteRequest(null)}
+              disabled={isDeleting}
+            >
+              取消
+            </Button>
+            <Button
+              className="h-10 rounded-xl bg-rose-600 px-5 text-white hover:bg-rose-700"
+              onClick={() => deleteRequest && void handleDeleteTokens(deleteRequest.tokens)}
+              disabled={isDeleting}
+            >
+              {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+              确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <section className="space-y-3">
         <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
           {metricCards.map((item) => {
@@ -604,7 +647,7 @@ function AccountsPageContent() {
                 <Button
                   variant="ghost"
                   className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
-                  onClick={() => void handleDeleteTokens(abnormalTokens)}
+                  onClick={() => openDeleteDialog(abnormalTokens, "移除异常账号")}
                   disabled={abnormalTokens.length === 0 || isDeleting}
                 >
                   {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
@@ -613,7 +656,7 @@ function AccountsPageContent() {
                 <Button
                   variant="ghost"
                   className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
-                  onClick={() => void handleDeleteTokens(selectedTokens)}
+                  onClick={() => openDeleteDialog(selectedTokens, "删除所选账户")}
                   disabled={selectedTokens.length === 0 || isDeleting}
                 >
                   {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
@@ -743,7 +786,7 @@ function AccountsPageContent() {
                             <button
                               type="button"
                               className="rounded-lg p-2 transition hover:bg-rose-50 hover:text-rose-500"
-                              onClick={() => void handleDeleteTokens([account.access_token])}
+                              onClick={() => openDeleteDialog([account.access_token], "删除账户")}
                               disabled={isDeleting}
                             >
                               <Trash2 className="size-4" />

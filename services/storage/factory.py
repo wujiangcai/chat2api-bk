@@ -5,7 +5,6 @@ from pathlib import Path
 
 from services.storage.base import StorageBackend
 from services.storage.database_storage import DatabaseStorageBackend
-from services.storage.git_storage import GitStorageBackend
 from services.storage.json_storage import JSONStorageBackend
 
 
@@ -62,6 +61,10 @@ def create_storage_backend(data_dir: Path) -> StorageBackend:
         print(f"[storage] Using Git storage: {_mask_token(repo_url)}, branch: {branch}, file: {file_path}")
         
         cache_dir = data_dir / "git_cache"
+        try:
+            from services.storage.git_storage import GitStorageBackend
+        except ImportError as exc:
+            raise RuntimeError("Git storage requires the gitpython dependency. Install project dependencies before enabling STORAGE_BACKEND=git.") from exc
         return GitStorageBackend(
             repo_url=repo_url,
             token=token,

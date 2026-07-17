@@ -9,6 +9,7 @@ type RequestConfig = AxiosRequestConfig & {
 
 const request = axios.create({
     baseURL: webConfig.apiUrl.replace(/\/$/, ""),
+    withCredentials: true,
 });
 
 request.interceptors.request.use(async (config) => {

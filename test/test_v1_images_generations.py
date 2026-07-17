@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import unittest
 
@@ -12,6 +13,7 @@ AUTH_KEY = "chatgpt2api"
 BASE_URL = "http://localhost:8000"
 
 
+@unittest.skipUnless(os.getenv("RUN_INTEGRATION_TESTS") == "1", "integration test: set RUN_INTEGRATION_TESTS=1 and start localhost service")
 class ImageGenerationsTests(unittest.TestCase):
     def test_image_generation_http(self):
         """测试图片生成的非流式 HTTP 调用。"""
