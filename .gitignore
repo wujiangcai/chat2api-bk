@@ -21,6 +21,11 @@ docker-compose-local.yml
 # Environment variables
 .env
 .env.local
+# 真实配置（含密钥）一律不入库；仅占位符示例可提交
+.env.*
+!.env.example
+!.env.production.example
+!.env.deploy.example
 
 # Database files
 *.db
