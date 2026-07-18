@@ -6,10 +6,13 @@ import time
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from queue import Empty
 from typing import Any, Dict, Iterator, Optional
 
 import tiktoken
 from curl_cffi import requests
+from curl_cffi.requests.exceptions import RequestException
+from curl_cffi.requests.models import STREAM_END
 from PIL import Image
 
 from services.account_service import account_service
@@ -533,25 +536,49 @@ class OpenAIBackendAPI:
         conversation_id = ""
         file_ids: list[str] = []
         sediment_ids: list[str] = []
-        for raw_line in response.iter_lines():
-            if not raw_line:
-                continue
-            line = raw_line.decode("utf-8", errors="ignore")
-            if not line.startswith("data:"):
-                continue
-            payload = line[5:].strip()
-            if payload == "[DONE]":
-                break
-            if not conversation_id:
-                match = re.search(r'"conversation_id"\s*:\s*"([^"]+)"', payload)
-                if match:
-                    conversation_id = match.group(1)
-            for file_id in re.findall(r"(file[-_][A-Za-z0-9]+)", payload):
-                if file_id not in file_ids:
-                    file_ids.append(file_id)
-            for sediment_id in re.findall(r"sediment://([A-Za-z0-9_-]+)", payload):
-                if sediment_id not in sediment_ids:
-                    sediment_ids.append(sediment_id)
+        timeout_secs = max(1.0, float(os.getenv("IMAGE_SSE_TIMEOUT_SECONDS") or "180"))
+        deadline = time.monotonic() + timeout_secs
+        pending = b""
+        queue = response.queue
+        if queue is None:
+            raise RuntimeError("image SSE response is not streaming")
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"image SSE timed out after {timeout_secs:g} seconds")
+                try:
+                    chunk = queue.get(timeout=min(1.0, remaining))
+                except Empty:
+                    continue
+                if isinstance(chunk, RequestException):
+                    raise chunk
+                if chunk is STREAM_END:
+                    break
+                if not isinstance(chunk, bytes):
+                    chunk = bytes(chunk)
+                pending += chunk
+                while b"\n" in pending:
+                    raw_line, pending = pending.split(b"\n", 1)
+                    line = raw_line.rstrip(b"\r").decode("utf-8", errors="ignore")
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        return {"conversation_id": conversation_id, "file_ids": file_ids, "sediment_ids": sediment_ids}
+                    if not conversation_id:
+                        match = re.search(r'"conversation_id"\s*:\s*"([^"]+)"', payload)
+                        if match:
+                            conversation_id = match.group(1)
+                    for file_id in re.findall(r"(file[-_][A-Za-z0-9]+)", payload):
+                        if file_id not in file_ids:
+                            file_ids.append(file_id)
+                    for sediment_id in re.findall(r"sediment://([A-Za-z0-9_-]+)", payload):
+                        if sediment_id not in sediment_ids:
+                            sediment_ids.append(sediment_id)
+        finally:
+            if response.quit_now:
+                response.quit_now.set()
         return {"conversation_id": conversation_id, "file_ids": file_ids, "sediment_ids": sediment_ids}
 
     def _get_conversation(self, conversation_id: str) -> Dict[str, Any]:

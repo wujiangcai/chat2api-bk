@@ -24,6 +24,10 @@ Edit `.env.production` and replace:
 - `MINIO_ROOT_PASSWORD` and `OBJECT_STORAGE_SECRET_ACCESS_KEY`
 - `OBJECT_STORAGE_PUBLIC_BASE_URL`
 
+Tune `IMAGE_SSE_TIMEOUT_SECONDS` (default `180`) for the maximum total wait on
+the upstream ChatGPT image SSE stream. It prevents a connected but silent
+upstream from occupying a worker forever; weak networks may use `240`-`300`.
+
 For Cloudflare R2 / AWS S3 / OSS / COS, set `OBJECT_STORAGE_BACKEND=s3` or `r2`,
 replace the endpoint/bucket/keys, and point `OBJECT_STORAGE_PUBLIC_BASE_URL` at
 the public bucket domain or CDN.
@@ -235,3 +239,6 @@ then sync backup zips to a different bucket or server.
 - Run multiple `api` replicas only after verifying all writes use PostgreSQL and image
   workers use Redis locks in your environment.
 - Keep Caddy at the edge or replace it with your cloud load balancer/CDN.
+
+For a Chinese architecture, proxy, test-gate, monitoring, upgrade and rollback
+runbook, see [`docs/OPERATIONS.zh-CN.md`](../../docs/OPERATIONS.zh-CN.md).
