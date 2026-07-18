@@ -1,6 +1,6 @@
 "use client";
 
-import { Clock3, LoaderCircle, Sparkles } from "lucide-react";
+import { Clock3, LoaderCircle, Pause, Play, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -15,6 +15,8 @@ type ImageResultsProps = {
   selectedConversation: ImageConversation | null;
   onOpenLightbox: (images: ImageLightboxItem[], index: number) => void;
   onContinueEdit: (conversationId: string, image: StoredImage | StoredReferenceImage) => void;
+  onPauseTurn?: (conversationId: string, turnId: string) => void;
+  onResumeTurn?: (conversationId: string, turnId: string) => void;
   formatConversationTime: (value: string) => string;
 };
 
@@ -22,6 +24,8 @@ export function ImageResults({
   selectedConversation,
   onOpenLightbox,
   onContinueEdit,
+  onPauseTurn,
+  onResumeTurn,
   formatConversationTime,
 }: ImageResultsProps) {
   if (!selectedConversation) {
@@ -119,6 +123,28 @@ export function ImageResults({
                   {turn.status === "queued" ? (
                     <span className="rounded-full bg-amber-50 px-3 py-1 text-amber-700">等待当前对话中的前序任务完成</span>
                   ) : null}
+                  {turn.status === "generating" && onPauseTurn ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 rounded-full border-stone-200 bg-white px-3 text-stone-700 hover:bg-stone-50"
+                      onClick={() => onPauseTurn(selectedConversation.id, turn.id)}
+                    >
+                      <Pause className="size-3.5" />
+                      暂停
+                    </Button>
+                  ) : null}
+                  {turn.status === "paused" && onResumeTurn ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 rounded-full border-stone-200 bg-white px-3 text-stone-700 hover:bg-stone-50"
+                      onClick={() => onResumeTurn(selectedConversation.id, turn.id)}
+                    >
+                      <Play className="size-3.5" />
+                      继续
+                    </Button>
+                  ) : null}
                 </div>
 
                 <div className="columns-1 gap-4 space-y-4 sm:columns-2 xl:columns-3">
@@ -179,6 +205,30 @@ export function ImageResults({
                       );
                     }
 
+                    if (image.status === "paused") {
+                      return (
+                        <div
+                          key={image.id}
+                          className={cn(
+                            "break-inside-avoid overflow-hidden border border-stone-300 bg-stone-100/80",
+                            turn.size === "1:1" && "aspect-square",
+                            turn.size === "16:9" && "aspect-video",
+                            turn.size === "9:16" && "aspect-[9/16]",
+                            turn.size === "4:3" && "aspect-[4/3]",
+                            turn.size === "3:4" && "aspect-[3/4]",
+                            !["1:1", "16:9", "9:16", "4:3", "3:4"].includes(turn.size) && "aspect-square",
+                          )}
+                        >
+                          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-8 text-center text-stone-500">
+                            <div className="rounded-full bg-white p-3 shadow-sm">
+                              <Pause className="size-5" />
+                            </div>
+                            <p className="text-sm">已暂停</p>
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
                       <div
                         key={image.id}
@@ -200,7 +250,13 @@ export function ImageResults({
                               <LoaderCircle className="size-5 animate-spin" />
                             )}
                           </div>
-                          <p className="text-sm">{turn.status === "queued" ? "已加入当前对话队列..." : "正在处理图片..."}</p>
+                          <p className="text-sm">
+                            {turn.status === "paused"
+                              ? "已暂停，可在上方点击继续"
+                              : turn.status === "queued"
+                                ? "已加入当前对话队列..."
+                                : "正在处理图片..."}
+                          </p>
                         </div>
                       </div>
                     );
@@ -227,6 +283,9 @@ function getTurnStatusLabel(status: ImageTurnStatus) {
   }
   if (status === "generating") {
     return "处理中";
+  }
+  if (status === "paused") {
+    return "已暂停";
   }
   if (status === "success") {
     return "已完成";

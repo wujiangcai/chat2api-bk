@@ -1,6 +1,6 @@
 "use client";
 import { ArrowUp, Check, ChevronDown, ImagePlus, LoaderCircle, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type RefObject } from "react";
 
 import { ImageLightbox } from "@/components/image-lightbox";
 import { Button } from "@/components/ui/button";
@@ -51,6 +51,7 @@ export function ImageComposer({
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [isSizeMenuOpen, setIsSizeMenuOpen] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const sizeMenuRef = useRef<HTMLDivElement>(null);
   const lightboxImages = useMemo(
     () => referenceImages.map((image, index) => ({ id: `${image.name}-${index}`, src: image.dataUrl })),
@@ -91,8 +92,39 @@ export function ImageComposer({
     void onReferenceImageChange(imageFiles);
   };
 
+  const handleComposerDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    if (!isDragging) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleComposerDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return;
+    }
+    setIsDragging(false);
+  };
+
+  const handleComposerDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+    const imageFiles = Array.from(event.dataTransfer.files).filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length > 0) {
+      void onReferenceImageChange(imageFiles);
+    }
+  };
+
   return (
-    <div className="shrink-0 flex justify-center">
+    <div
+      className="shrink-0 flex justify-center"
+      onDragOver={handleComposerDragOver}
+      onDragLeave={handleComposerDragLeave}
+      onDrop={handleComposerDrop}
+    >
       <div style={{ width: "min(980px, 100%)" }}>
         {mode === "edit" && (
           <input
@@ -142,7 +174,12 @@ export function ImageComposer({
           </div>
         ) : null}
 
-        <div className="rounded-[32px] border border-stone-200 bg-white">
+        <div className="relative rounded-[32px] border border-stone-200 bg-white">
+          {isDragging ? (
+            <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-[32px] border-2 border-dashed border-stone-400 bg-white/85 text-sm font-medium text-stone-700">
+              松开以添加参考图
+            </div>
+          ) : null}
           <div
             className="relative cursor-text"
             onClick={() => {

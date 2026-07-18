@@ -14,12 +14,12 @@ export type StoredReferenceImage = {
 
 export type StoredImage = {
   id: string;
-  status?: "loading" | "success" | "error";
+  status?: "loading" | "success" | "error" | "paused";
   b64_json?: string;
   error?: string;
 };
 
-export type ImageTurnStatus = "queued" | "generating" | "success" | "error";
+export type ImageTurnStatus = "queued" | "generating" | "paused" | "success" | "error";
 
 export type ImageTurn = {
   id: string;
@@ -57,7 +57,12 @@ const IMAGE_CONVERSATIONS_KEY = "items";
 let imageConversationWriteQueue: Promise<void> = Promise.resolve();
 
 function normalizeStoredImage(image: StoredImage): StoredImage {
-  if (image.status === "loading" || image.status === "error" || image.status === "success") {
+  if (
+    image.status === "loading" ||
+    image.status === "error" ||
+    image.status === "success" ||
+    image.status === "paused"
+  ) {
     return image;
   }
   return {
@@ -130,6 +135,7 @@ function normalizeTurn(turn: ImageTurn & Record<string, unknown>): ImageTurn {
     status:
       turn.status === "queued" ||
       turn.status === "generating" ||
+      turn.status === "paused" ||
       turn.status === "success" ||
       turn.status === "error"
         ? turn.status
@@ -153,7 +159,10 @@ function normalizeConversation(conversation: ImageConversation & Record<string, 
           images: Array.isArray(conversation.images) ? (conversation.images as StoredImage[]) : [],
           createdAt: String(conversation.createdAt || new Date().toISOString()),
           status:
-            conversation.status === "generating" || conversation.status === "success" || conversation.status === "error"
+            conversation.status === "generating" ||
+            conversation.status === "paused" ||
+            conversation.status === "success" ||
+            conversation.status === "error"
               ? conversation.status
               : "success",
           error: typeof conversation.error === "string" ? conversation.error : undefined,

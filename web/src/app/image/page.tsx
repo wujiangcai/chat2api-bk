@@ -193,6 +193,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const resultsViewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortControllers = useRef<Map<string, AbortController>>(new Map());
 
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageCount, setImageCount] = useState("1");
@@ -473,6 +474,39 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setReferenceImages((prev) => prev.filter((_, currentIndex) => currentIndex !== index));
   }, []);
 
+  const handlePauseTurn = useCallback(
+    (conversationId: string, turnId: string) => {
+      const controller = abortControllers.current.get(conversationId);
+      if (controller && !controller.signal.aborted) {
+        controller.abort();
+      }
+      abortControllers.current.delete(conversationId);
+
+      void updateConversation(conversationId, (current) => {
+        if (!current) {
+          return current as unknown as ImageConversation;
+        }
+        return {
+          ...current,
+          updatedAt: new Date().toISOString(),
+          turns: current.turns.map((turn) =>
+            turn.id === turnId && turn.status === "generating"
+              ? {
+                  ...turn,
+                  status: "paused" as const,
+                  error: undefined,
+                  images: turn.images.map((image) =>
+                    image.status === "loading" ? { ...image, status: "paused" as const } : image,
+                  ),
+                }
+              : turn,
+          ),
+        };
+      });
+    },
+    [updateConversation],
+  );
+
   const handleContinueEdit = useCallback(
     (conversationId: string, image: StoredImage | StoredReferenceImage) => {
       const nextReferenceImage =
@@ -521,6 +555,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       }
 
       activeConversationQueueIds.add(conversationId);
+      const controller = new AbortController();
+      abortControllers.current.set(conversationId, controller);
       await updateConversation(conversationId, (current) => {
         const conversation = current ?? snapshot;
         return {
@@ -570,12 +606,13 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           return;
         }
 
+        let abortedTask = false;
         const tasks = pendingImages.map(async (pendingImage) => {
           try {
             const data =
               queuedTurn.mode === "edit"
-                ? await editImage(referenceFiles, queuedTurn.prompt, queuedTurn.model, queuedTurn.size)
-                : await generateImage(queuedTurn.prompt, queuedTurn.model, queuedTurn.size);
+                ? await editImage(referenceFiles, queuedTurn.prompt, queuedTurn.model, queuedTurn.size, controller.signal)
+                : await generateImage(queuedTurn.prompt, queuedTurn.model, queuedTurn.size, controller.signal);
             const first = data.data?.[0];
             if (!first?.b64_json) {
               throw new Error("未返回图片数据");
@@ -609,11 +646,15 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
             return nextImage;
           } catch (error) {
+            const isPaused = controller.signal.aborted;
+            if (isPaused) {
+              abortedTask = true;
+            }
             const message = error instanceof Error ? error.message : "生成失败";
             const failedImage: StoredImage = {
               id: pendingImage.id,
-              status: "error",
-              error: message,
+              status: isPaused ? "paused" : "error",
+              error: isPaused ? undefined : message,
             };
 
             await updateConversation(
@@ -641,6 +682,25 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         });
 
         const settled = await Promise.allSettled(tasks);
+        if (abortedTask) {
+          await updateConversation(conversationId, (current) => {
+            const conversation = current ?? snapshot;
+            return {
+              ...conversation,
+              updatedAt: new Date().toISOString(),
+              turns: conversation.turns.map((turn) =>
+                turn.id === queuedTurn.id
+                  ? {
+                      ...turn,
+                      status: "paused",
+                      error: undefined,
+                    }
+                  : turn,
+              ),
+            };
+          });
+          return;
+        }
         const resumedSuccessCount = settled.filter(
           (item): item is PromiseFulfilledResult<StoredImage> => item.status === "fulfilled",
         ).length;
@@ -705,6 +765,34 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     [loadQuota, updateConversation],
   );
   /* eslint-enable react-hooks/preserve-manual-memoization */
+
+  const handleResumeTurn = useCallback(
+    async (conversationId: string, turnId: string) => {
+      await updateConversation(conversationId, (current) => {
+        if (!current) {
+          return current as unknown as ImageConversation;
+        }
+        return {
+          ...current,
+          updatedAt: new Date().toISOString(),
+          turns: current.turns.map((turn) =>
+            turn.id === turnId && turn.status === "paused"
+              ? {
+                  ...turn,
+                  status: "queued" as const,
+                  error: undefined,
+                  images: turn.images.map((image) =>
+                    image.status === "paused" ? { ...image, status: "loading" as const } : image,
+                  ),
+                }
+              : turn,
+          ),
+        };
+      });
+      void runConversationQueue(conversationId);
+    },
+    [runConversationQueue, updateConversation],
+  );
 
   useEffect(() => {
     for (const conversation of conversations) {
@@ -783,7 +871,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <>
-      <section className="mx-auto grid h-[calc(100vh-5rem)] min-h-0 w-full max-w-[1380px] grid-cols-1 gap-3 px-3 pb-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+      <section className="mx-auto grid h-[calc(100dvh-5rem)] min-h-0 w-full max-w-[1380px] grid-cols-1 gap-3 px-3 pb-6 lg:grid-cols-[240px_minmax(0,1fr)]">
         <div className="hidden h-full min-h-0 border-r border-stone-200/70 pr-3 lg:block">
           <ImageSidebar
             conversations={conversations}
@@ -862,6 +950,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
               selectedConversation={selectedConversation}
               onOpenLightbox={openLightbox}
               onContinueEdit={handleContinueEdit}
+              onPauseTurn={handlePauseTurn}
+              onResumeTurn={handleResumeTurn}
               formatConversationTime={formatConversationTime}
             />
           </div>

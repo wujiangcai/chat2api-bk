@@ -88,7 +88,7 @@ export function TopNav() {
             <span className="hidden md:inline">GitHub</span>
           </a>
         </div>
-        <div className="flex flex-1 justify-center gap-3 sm:gap-8">
+        <div className="hide-scrollbar flex flex-1 justify-center gap-2 overflow-x-auto px-1 sm:gap-8">
           {navItems.map((item) => {
             const active = pathname === item.href;
             return (
@@ -96,7 +96,7 @@ export function TopNav() {
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "relative py-1 text-[13px] font-medium transition sm:text-[15px]",
+                  "relative whitespace-nowrap py-1 text-[13px] font-medium transition sm:text-[15px]",
                   active ? "font-semibold text-stone-950" : "text-stone-500 hover:text-stone-900",
                 )}
               >
