@@ -595,6 +595,8 @@ class ChatGPTService:
         emitted = False
         last_error = ""
         for index in range(1, n + 1):
+            max_retries = max(1, min(len(self.account_service.list_tokens()), 5))
+            attempts = 0
             while True:
                 try:
                     request_token = self.account_service.get_available_access_token()
@@ -641,6 +643,7 @@ class ChatGPTService:
                         }
                     break
                 except Exception as exc:
+                    attempts += 1
                     account = self.account_service.mark_image_result(request_token, success=False)
                     message = str(exc)
                     last_error = message
@@ -657,12 +660,19 @@ class ChatGPTService:
                             "event": "image_generate_remove_invalid_token",
                             "request_token": request_token,
                         })
-                        continue
-                    if account and account.get("auto_disabled"):
+                    elif account and account.get("auto_disabled"):
                         logger.warning({
                             "event": "image_generate_auto_disabled",
                             "request_token": request_token,
                             "consecutive_fail": account.get("consecutive_fail"),
+                        })
+                    if attempts < max_retries and self.account_service.has_available_account():
+                        logger.warning({
+                            "event": "image_generate_retry",
+                            "index": index,
+                            "attempt": attempts,
+                            "max_retries": max_retries,
+                            "last_error": message,
                         })
                         continue
                     break
@@ -698,6 +708,8 @@ class ChatGPTService:
         last_error = ""
         emitted = False
         for index in range(1, n + 1):
+            max_retries = max(1, min(len(self.account_service.list_tokens()), 5))
+            attempts = 0
             while True:
                 try:
                     request_token = self.account_service.get_available_access_token()
@@ -752,6 +764,7 @@ class ChatGPTService:
                     })
                     break
                 except Exception as exc:
+                    attempts += 1
                     account = self.account_service.mark_image_result(request_token, success=False)
                     message = str(exc)
                     last_error = message
@@ -762,13 +775,28 @@ class ChatGPTService:
                         "quota": account.get("quota") if account else "unknown",
                         "status": account.get("status") if account else "unknown",
                     })
-                    if not emitted_for_request and is_token_invalid_error(message):
-                        self._remove_invalid_token(request_token, "image_generate_stream")
-                        logger.warning({
-                            "event": "image_generate_stream_remove_invalid_token",
-                            "request_token": request_token,
-                        })
-                        continue
+                    if not emitted_for_request:
+                        if is_token_invalid_error(message):
+                            self._remove_invalid_token(request_token, "image_generate_stream")
+                            logger.warning({
+                                "event": "image_generate_stream_remove_invalid_token",
+                                "request_token": request_token,
+                            })
+                        elif account and account.get("auto_disabled"):
+                            logger.warning({
+                                "event": "image_generate_stream_auto_disabled",
+                                "request_token": request_token,
+                                "consecutive_fail": account.get("consecutive_fail"),
+                            })
+                        if attempts < max_retries and self.account_service.has_available_account():
+                            logger.warning({
+                                "event": "image_generate_stream_retry",
+                                "index": index,
+                                "attempt": attempts,
+                                "max_retries": max_retries,
+                                "last_error": message,
+                            })
+                            continue
                     raise ImageGenerationError(last_error or "image generation failed") from exc
 
     def edit_with_pool(
@@ -789,6 +817,8 @@ class ChatGPTService:
             raise ImageGenerationError("image is required")
 
         for index in range(1, n + 1):
+            max_retries = max(1, min(len(self.account_service.list_tokens()), 5))
+            attempts = 0
             while True:
                 try:
                     request_token = self.account_service.get_available_access_token()
@@ -832,6 +862,7 @@ class ChatGPTService:
                     })
                     break
                 except Exception as exc:
+                    attempts += 1
                     account = self.account_service.mark_image_result(request_token, success=False)
                     message = str(exc)
                     last_error = message
@@ -848,12 +879,19 @@ class ChatGPTService:
                             "event": "image_edit_remove_invalid_token",
                             "request_token": request_token,
                         })
-                        continue
-                    if account and account.get("auto_disabled"):
+                    elif account and account.get("auto_disabled"):
                         logger.warning({
                             "event": "image_edit_auto_disabled",
                             "request_token": request_token,
                             "consecutive_fail": account.get("consecutive_fail"),
+                        })
+                    if attempts < max_retries and self.account_service.has_available_account():
+                        logger.warning({
+                            "event": "image_edit_retry",
+                            "index": index,
+                            "attempt": attempts,
+                            "max_retries": max_retries,
+                            "last_error": message,
                         })
                         continue
                     break
@@ -885,6 +923,8 @@ class ChatGPTService:
         encoded_images = self._encode_images(normalized_images)
 
         for index in range(1, n + 1):
+            max_retries = max(1, min(len(self.account_service.list_tokens()), 5))
+            attempts = 0
             while True:
                 try:
                     request_token = self.account_service.get_available_access_token()
@@ -941,6 +981,7 @@ class ChatGPTService:
                     })
                     break
                 except Exception as exc:
+                    attempts += 1
                     account = self.account_service.mark_image_result(request_token, success=False)
                     message = str(exc)
                     last_error = message
@@ -951,13 +992,28 @@ class ChatGPTService:
                         "quota": account.get("quota") if account else "unknown",
                         "status": account.get("status") if account else "unknown",
                     })
-                    if not emitted_for_request and is_token_invalid_error(message):
-                        self._remove_invalid_token(request_token, "image_edit_stream")
-                        logger.warning({
-                            "event": "image_edit_stream_remove_invalid_token",
-                            "request_token": request_token,
-                        })
-                        continue
+                    if not emitted_for_request:
+                        if is_token_invalid_error(message):
+                            self._remove_invalid_token(request_token, "image_edit_stream")
+                            logger.warning({
+                                "event": "image_edit_stream_remove_invalid_token",
+                                "request_token": request_token,
+                            })
+                        elif account and account.get("auto_disabled"):
+                            logger.warning({
+                                "event": "image_edit_stream_auto_disabled",
+                                "request_token": request_token,
+                                "consecutive_fail": account.get("consecutive_fail"),
+                            })
+                        if attempts < max_retries and self.account_service.has_available_account():
+                            logger.warning({
+                                "event": "image_edit_stream_retry",
+                                "index": index,
+                                "attempt": attempts,
+                                "max_retries": max_retries,
+                                "last_error": message,
+                            })
+                            continue
                     raise ImageGenerationError(last_error or "image edit failed") from exc
 
     @staticmethod
@@ -1032,6 +1088,8 @@ class ChatGPTService:
             encoded_images = self._encode_images(images)
 
         last_error = ""
+        max_retries = max(1, min(len(self.account_service.list_tokens()), 5))
+        attempts = 0
         while True:
             try:
                 request_token = self.account_service.get_available_access_token()
@@ -1062,6 +1120,7 @@ class ChatGPTService:
                 })
                 return
             except Exception as exc:
+                attempts += 1
                 account = self.account_service.mark_image_result(request_token, success=False)
                 message = str(exc)
                 last_error = message
@@ -1072,13 +1131,27 @@ class ChatGPTService:
                     "quota": account.get("quota") if account else "unknown",
                     "status": account.get("status") if account else "unknown",
                 })
-                if not emitted and is_token_invalid_error(message):
-                    self._remove_invalid_token(request_token, "image_stream")
-                    logger.warning({
-                        "event": "image_stream_remove_invalid_token",
-                        "request_token": request_token,
-                    })
-                    continue
+                if not emitted:
+                    if is_token_invalid_error(message):
+                        self._remove_invalid_token(request_token, "image_stream")
+                        logger.warning({
+                            "event": "image_stream_remove_invalid_token",
+                            "request_token": request_token,
+                        })
+                    elif account and account.get("auto_disabled"):
+                        logger.warning({
+                            "event": "image_stream_auto_disabled",
+                            "request_token": request_token,
+                            "consecutive_fail": account.get("consecutive_fail"),
+                        })
+                    if attempts < max_retries and self.account_service.has_available_account():
+                        logger.warning({
+                            "event": "image_stream_retry",
+                            "attempt": attempts,
+                            "max_retries": max_retries,
+                            "last_error": message,
+                        })
+                        continue
                 raise HTTPException(status_code=502, detail={"error": last_error or "image generation failed"}) from exc
 
     def _create_text_chat_completion(self, body: dict[str, object]) -> dict[str, object]:

@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("CHATGPT2API_AUTH_KEY", "test-auth")
 
@@ -37,6 +39,131 @@ class AccountCapabilityTests(unittest.TestCase):
                 {"status": "正常", "type": "Free", "image_quota_unknown": False, "quota": 0}
             )
         )
+
+    def test_free_account_availability_states(self) -> None:
+        # Free 账号在 image_quota_unknown == True 时为可用
+        self.assertTrue(
+            AccountService._is_image_account_available(
+                {"status": "正常", "type": "Free", "image_quota_unknown": True, "quota": 0}
+            )
+        )
+        # Free 账号在 image_quota_unknown == False 且 quota == 0 时不可用
+        self.assertFalse(
+            AccountService._is_image_account_available(
+                {"status": "正常", "type": "Free", "image_quota_unknown": False, "quota": 0}
+            )
+        )
+        # Free 账号在 quota > 0 时可用
+        self.assertTrue(
+            AccountService._is_image_account_available(
+                {"status": "正常", "type": "Free", "image_quota_unknown": False, "quota": 3}
+            )
+        )
+
+    def test_throttled_account_with_expired_restore_at_is_available(self) -> None:
+        past_iso = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        self.assertTrue(
+            AccountService._is_image_account_available(
+                {"status": "限流", "type": "Free", "restore_at": past_iso, "quota": 0}
+            )
+        )
+        self.assertTrue(
+            AccountService._is_image_account_available(
+                {"status": "限流", "type": "Free", "restoreAt": "2020-01-01T00:00:00Z", "quota": 0}
+            )
+        )
+        future_iso = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+        self.assertFalse(
+            AccountService._is_image_account_available(
+                {"status": "限流", "type": "Free", "restore_at": future_iso, "quota": 0}
+            )
+        )
+        self.assertFalse(
+            AccountService._is_image_account_available(
+                {"status": "限流", "type": "Free", "restore_at": None, "quota": 0}
+            )
+        )
+        self.assertFalse(
+            AccountService._is_image_account_available(
+                {"status": "限流", "type": "Free", "restore_at": "invalid-date", "quota": 0}
+            )
+        )
+
+    @patch("services.account_service.Session")
+    def test_fetch_remote_info_free_account_status(self, mock_session_cls: MagicMock) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+
+            mock_session = MagicMock()
+            mock_session_cls.return_value = mock_session
+            mock_session.headers = {}
+
+            me_resp = MagicMock()
+            me_resp.status_code = 200
+            me_resp.json.return_value = {
+                "id": "user-123",
+                "email": "free_user@example.com",
+            }
+
+            # 1. init payload 未下发 limits_progress (image_quota_unknown == True)
+            init_resp_unknown = MagicMock()
+            init_resp_unknown.status_code = 200
+            init_resp_unknown.json.return_value = {
+                "default_model_slug": "gpt-4o",
+                "limits_progress": [],
+            }
+
+            mock_session.get.return_value = me_resp
+            mock_session.post.return_value = init_resp_unknown
+
+            info = service.fetch_remote_info("token-free-1")
+            self.assertEqual(info["type"], "Free")
+            self.assertTrue(info["image_quota_unknown"])
+            self.assertEqual(info["quota"], 0)
+            self.assertEqual(info["status"], "正常")
+
+            # 2. init payload 下发 image_gen 且 remaining == 0 (image_quota_unknown == False)
+            init_resp_zero = MagicMock()
+            init_resp_zero.status_code = 200
+            init_resp_zero.json.return_value = {
+                "default_model_slug": "gpt-4o",
+                "limits_progress": [
+                    {
+                        "feature_name": "image_gen",
+                        "remaining": 0,
+                        "reset_after": "2026-09-01T12:00:00Z",
+                    }
+                ],
+            }
+            mock_session.post.return_value = init_resp_zero
+
+            info_zero = service.fetch_remote_info("token-free-2")
+            self.assertEqual(info_zero["type"], "Free")
+            self.assertFalse(info_zero["image_quota_unknown"])
+            self.assertEqual(info_zero["quota"], 0)
+            self.assertEqual(info_zero["status"], "限流")
+            self.assertEqual(info_zero["restore_at"], "2026-09-01T12:00:00Z")
+
+            # 3. init payload 下发 image_gen 且 remaining == 3 (image_quota_unknown == False)
+            init_resp_positive = MagicMock()
+            init_resp_positive.status_code = 200
+            init_resp_positive.json.return_value = {
+                "default_model_slug": "gpt-4o",
+                "limits_progress": [
+                    {
+                        "feature_name": "image_gen",
+                        "remaining": 3,
+                        "reset_after": "2026-09-01T12:00:00Z",
+                    }
+                ],
+            }
+            mock_session.post.return_value = init_resp_positive
+
+            info_pos = service.fetch_remote_info("token-free-3")
+            self.assertEqual(info_pos["type"], "Free")
+            self.assertFalse(info_pos["image_quota_unknown"])
+            self.assertEqual(info_pos["quota"], 3)
+            self.assertEqual(info_pos["status"], "正常")
 
     def test_prolite_variants_are_normalized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from threading import Lock
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 from curl_cffi.requests import Session
 
@@ -61,14 +61,45 @@ class AccountService:
         return -1
 
     @staticmethod
+    def _is_restore_at_expired(value: object) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, (int, float)):
+            try:
+                candidate = datetime.fromtimestamp(value, tz=timezone.utc)
+                return datetime.now(timezone.utc) >= candidate
+            except (ValueError, OSError):
+                return False
+        raw = str(value or "").strip()
+        if not raw:
+            return False
+        try:
+            candidate = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if candidate.tzinfo is None:
+                candidate = candidate.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) >= candidate.astimezone(timezone.utc)
+        except ValueError:
+            try:
+                ts = float(raw)
+                candidate = datetime.fromtimestamp(ts, tz=timezone.utc)
+                return datetime.now(timezone.utc) >= candidate
+            except (ValueError, OSError):
+                return False
+
+    @staticmethod
     def _is_image_account_available(account: dict) -> bool:
         if not isinstance(account, dict):
             return False
         if bool(account.get("disabled")):
             return False
         status = str(account.get("status") or "").strip()
-        if status in {"禁用", "限流", "异常"}:
+        if status in {"禁用", "异常"}:
             return False
+        if status == "限流":
+            restore_at = account.get("restore_at") or account.get("restoreAt")
+            if not AccountService._is_restore_at_expired(restore_at):
+                return False
+            return True
         if bool(account.get("image_quota_unknown")):
             return True
         try:
@@ -494,7 +525,7 @@ class AccountService:
 
             account_type = self._detect_account_type(access_token, me_payload, init_payload)
             quota, restore_at, image_quota_unknown = self._extract_quota_and_restore_at(limits_progress)
-            status = "正常" if image_quota_unknown and account_type != "Free" else ("限流" if quota == 0 else "正常")
+            status = "正常" if image_quota_unknown else ("限流" if quota == 0 else "正常")
 
             result = {
                 "email": me_payload.get("email"),
