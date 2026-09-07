@@ -4,8 +4,9 @@
 
 | 功能 | 状态 | 说明 |
 |:----------------------------------------|:--:|:--------------------------------------------------------------|
-| OpenAI 兼容 `POST /v1/images/generations` | ✅  | 已支持，用于图片生成，并可通过 `n` 返回多张图片。 |
-| OpenAI 兼容 `POST /v1/images/edits` | ✅  | 已支持，可上传图片进行编辑。 |
+| OpenAI 兼容 `POST /v1/images/generations` | ✅  | 已支持，用于图片生成，并可通过 `n` 返回多张图片。`async=true` 或 `Prefer: respond-async` 时立即返回 `task_id`。 |
+| OpenAI 兼容 `POST /v1/images/edits` | ✅  | 已支持，可上传图片进行编辑。同样支持异步入队，避免 Cloudflare 524。 |
+| OpenAI 兼容 `GET /v1/tasks/{task_id}` | ✅  | 查询异步生图任务：`submitted` / `processing` / `completed` / `failed`。 |
 | 面向图片工作流的 `POST /v1/chat/completions` | ✅  | 已支持图片相关请求。 |
 | 面向图片工作流的 `POST /v1/responses` | ✅  | 已支持图片生成工具调用。 |
 | `GET /v1/models` 接口 | ✅  | 当前返回 `gpt-image-2`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、`gpt-5-mini`。 |

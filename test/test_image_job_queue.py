@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -47,9 +48,16 @@ class FakeRedis:
 class StubChatGPTService:
     def __init__(self):
         self.calls = 0
+        self.edit_calls = 0
+        self.last_edit_images = None
 
     def generate_with_pool(self, *args):
         self.calls += 1
+        return {"data": [{"b64_json": ONE_PIXEL_PNG_B64}]}
+
+    def edit_with_pool(self, *args):
+        self.edit_calls += 1
+        self.last_edit_images = args[1] if len(args) > 1 else None
         return {"data": [{"b64_json": ONE_PIXEL_PNG_B64}]}
 
 
@@ -75,6 +83,7 @@ class ImageJobQueueTests(unittest.TestCase):
         assets = ImageAssetService(storage, base_dir / "assets")
         redis = FakeRedis()
         coordinator = RedisImageJobCoordinator(redis, queue_key="test:queued", dead_letter_key="test:dead", lock_prefix="test:lock:")
+        self.base_dir = base_dir
         return storage, auth, assets, coordinator, redis
 
     def test_redis_coordinator_allows_worker_instance_to_pick_job_created_elsewhere(self):
@@ -218,6 +227,48 @@ class ImageJobQueueTests(unittest.TestCase):
         ledger = list(reversed(auth.list_quota_ledger(str(user["id"]))))
         self.assertEqual([item["amount"] for item in ledger], [2, -1, 1, -1])
         self.assertEqual(ledger[-1]["reason"], "image-job-retry-reserve")
+
+    def test_edit_job_runs_via_edit_pool_and_exposes_openai_task(self):
+        storage, auth, assets, coordinator, redis = self.create_services()
+        service = ImageJobService(
+            storage,
+            auth,
+            assets,
+            coordinator=coordinator,
+            job_input_dir=self.base_dir / "job-inputs",
+        )
+        chatgpt = StubChatGPTService()
+        user, _, key = auth.register_user("user@example.com", "StrongPass123")
+        identity = {**key, **user, "user_id": user["id"], "key_id": key["id"]}
+        png = base64.b64decode(ONE_PIXEL_PNG_B64)
+
+        queued = service.enqueue_edit(
+            job_id="job_edit",
+            identity=identity,
+            request={"prompt": "keep the socks", "n": 1, "response_format": "b64_json"},
+            images=[(png, "source.png", "image/png")],
+        )
+        self.assertEqual(queued["type"], "image.edit")
+        self.assertEqual(queued["status"], "queued")
+        submitted = service.to_openai_task(queued)
+        self.assertEqual(submitted["task_id"], "job_edit")
+        self.assertEqual(submitted["status"], "submitted")
+
+        processed = service.run_next(chatgpt, "http://testserver")
+        self.assertEqual(processed["status"], "succeeded")
+        self.assertEqual(chatgpt.edit_calls, 1)
+        self.assertEqual(chatgpt.calls, 0)
+        self.assertEqual(len(chatgpt.last_edit_images), 1)
+        self.assertEqual(chatgpt.last_edit_images[0][0], png)
+
+        completed = service.to_openai_task(service.get_job("job_edit"))
+        self.assertEqual(completed["status"], "completed")
+        self.assertTrue(completed["result"]["images"])
+        self.assertTrue(
+            completed["result"]["images"][0].get("b64_json")
+            or completed["result"]["images"][0].get("url")
+        )
+        self.assertFalse((self.base_dir / "job-inputs" / "job_edit").exists())
 
 
 if __name__ == "__main__":

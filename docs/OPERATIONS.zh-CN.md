@@ -75,6 +75,10 @@ docker compose --env-file deploy/production/.env.production exec api \
 
 `IMAGE_SSE_TIMEOUT_SECONDS` 防止上游建立连接后一直不返回 SSE 事件。弱网络可提高至 `240` 或 `300`；不建议设得无限大。超时会中止流并让任务进入既有失败/重试路径。
 
+域名走 Cloudflare 时，**不要**让客户端同步等待 `/v1/images/edits` 出图。免费套餐 origin 超时约 100 秒，超时返回 524，但 worker 仍可能把图画完并写入资产库。下游应使用 `async=true` 或 `Prefer: respond-async` 立即拿到 `task_id`，再轮询 `GET /v1/tasks/{task_id}`。协议见 [`ASYNC-IMAGE-TASKS.md`](ASYNC-IMAGE-TASKS.md)。
+
+图生图结果里不要把参考图 `file_id` 当成生成图；`openai_backend_api` 会过滤上传垫图的 file id，避免把原图当结果返回。
+
 ## 5. 测试门禁
 
 后端：

@@ -790,10 +790,21 @@ class OpenAIBackendAPI:
         file_ids = list(sse_result["file_ids"])
         sediment_ids = list(sse_result["sediment_ids"])
         invalid_file_id_patterns = {"file_upload"}
-        file_ids = [fid for fid in file_ids if fid not in invalid_file_id_patterns]
+        reference_file_ids = {
+            str(item.get("file_id") or "").strip()
+            for item in references
+            if str(item.get("file_id") or "").strip()
+        }
+        file_ids = [
+            fid for fid in file_ids
+            if fid not in invalid_file_id_patterns and fid not in reference_file_ids
+        ]
         if conversation_id and not file_ids and not sediment_ids:
             polled_file_ids, polled_sediment_ids = self._poll_image_results(conversation_id)
-            file_ids.extend([item for item in polled_file_ids if item not in file_ids])
+            file_ids.extend([
+                item for item in polled_file_ids
+                if item not in file_ids and item not in reference_file_ids
+            ])
             sediment_ids.extend([item for item in polled_sediment_ids if item not in sediment_ids])
             logger.debug({
                 "event": "image_polled_result",
@@ -981,6 +992,11 @@ class OpenAIBackendAPI:
         sediment_ids: list[str] = []
 
         references = [self._upload_image(image, f"image_{idx}.png") for idx, image in enumerate(images or [], start=1)]
+        reference_file_ids = {
+            str(item.get("file_id") or "").strip()
+            for item in references
+            if str(item.get("file_id") or "").strip()
+        }
         self._bootstrap()
         requirements = self._get_auth_chat_requirements()
         final_prompt = self._build_image_prompt(prompt, size)
@@ -1067,10 +1083,16 @@ class OpenAIBackendAPI:
             sse.close()
 
         invalid_file_id_patterns = {"file_upload"}
-        file_ids = [fid for fid in file_ids if fid not in invalid_file_id_patterns]
+        file_ids = [
+            fid for fid in file_ids
+            if fid not in invalid_file_id_patterns and fid not in reference_file_ids
+        ]
         if conversation_id and not file_ids and not sediment_ids:
             polled_file_ids, polled_sediment_ids = self._poll_image_results(conversation_id)
-            self._append_unique(file_ids, polled_file_ids)
+            self._append_unique(
+                file_ids,
+                [item for item in polled_file_ids if item not in reference_file_ids],
+            )
             self._append_unique(sediment_ids, polled_sediment_ids)
 
         urls = self._resolve_image_urls(conversation_id, file_ids, sediment_ids)

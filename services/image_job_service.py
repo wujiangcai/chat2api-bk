@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Any, Literal
 
@@ -16,6 +18,13 @@ from services.storage.base import StorageBackend
 ImageJobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+_TASK_STATUS_MAP = {
+    "queued": "submitted",
+    "running": "processing",
+    "succeeded": "completed",
+    "failed": "failed",
+    "cancelled": "failed",
+}
 
 
 def _now_iso() -> str:
@@ -81,11 +90,13 @@ class ImageJobService:
         default_max_attempts: int | None = None,
         retry_delay_seconds: int | None = None,
         stale_running_seconds: int | None = None,
+        job_input_dir: Path | None = None,
     ):
         self.storage = storage
         self.auth_service = auth
         self.asset_service = asset_service or image_asset_service
         self.coordinator = coordinator
+        self.job_input_dir = Path(job_input_dir) if job_input_dir is not None else None
         self.default_max_attempts = max(1, int(default_max_attempts or os.getenv("IMAGE_JOB_MAX_ATTEMPTS", "1") or "1"))
         self.retry_delay_seconds = max(0, int(retry_delay_seconds if retry_delay_seconds is not None else os.getenv("IMAGE_JOB_RETRY_DELAY_SECONDS", "5") or "5"))
         self.stale_running_seconds = max(30, int(stale_running_seconds if stale_running_seconds is not None else os.getenv("IMAGE_JOB_STALE_RUNNING_SECONDS", "900") or "900"))
@@ -97,11 +108,29 @@ class ImageJobService:
         return f"job_{uuid.uuid4().hex[:16]}"
 
     @staticmethod
-    def _normalize_request(raw: object) -> dict[str, object]:
+    def _normalize_image_refs(raw: object) -> list[dict[str, object]]:
+        if not isinstance(raw, list):
+            return []
+        refs: list[dict[str, object]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            path = _clean(item.get("path"))
+            if not path:
+                continue
+            refs.append({
+                "path": path,
+                "filename": _clean(item.get("filename")) or Path(path).name,
+                "content_type": _clean(item.get("content_type")) or "image/png",
+            })
+        return refs
+
+    @classmethod
+    def _normalize_request(cls, raw: object) -> dict[str, object]:
         if not isinstance(raw, dict):
             raw = {}
         prompt = _clean(raw.get("prompt"))
-        return {
+        request: dict[str, object] = {
             "prompt": prompt,
             "model": _clean(raw.get("model")) or "gpt-image-2",
             "n": max(1, min(4, _safe_int(raw.get("n"), 1))),
@@ -109,6 +138,10 @@ class ImageJobService:
             "response_format": _clean(raw.get("response_format")) or "b64_json",
             "max_attempts": max(1, _safe_int(raw.get("max_attempts"), 0)) if raw.get("max_attempts") is not None else None,
         }
+        image_refs = cls._normalize_image_refs(raw.get("images"))
+        if image_refs:
+            request["images"] = image_refs
+        return request
 
     @staticmethod
     def _normalize_owner(raw: object) -> dict[str, object]:
@@ -227,12 +260,52 @@ class ImageJobService:
             or (key_id and owner.get("key_id") == key_id)
         )
 
-    def enqueue_generation(
+    def _input_root(self) -> Path:
+        if self.job_input_dir is not None:
+            return self.job_input_dir
+        from services.config import DATA_DIR
+        return DATA_DIR / "job-inputs"
+
+    def _store_edit_inputs(
+        self, job_id: str, images: list[tuple[bytes, str, str]]
+    ) -> list[dict[str, object]]:
+        root = self._input_root() / job_id
+        root.mkdir(parents=True, exist_ok=True)
+        stored: list[dict[str, object]] = []
+        for index, (data, filename, content_type) in enumerate(images):
+            suffix = Path(filename or "image.png").suffix or ".png"
+            path = root / f"{index}{suffix}"
+            path.write_bytes(data)
+            stored.append({
+                "path": str(path),
+                "filename": filename or path.name,
+                "content_type": content_type or "image/png",
+            })
+        return stored
+
+    def _load_edit_images(self, request: dict[str, object]) -> list[tuple[bytes, str, str]]:
+        images: list[tuple[bytes, str, str]] = []
+        for item in self._normalize_image_refs(request.get("images")):
+            path = Path(str(item["path"]))
+            images.append((
+                path.read_bytes(),
+                str(item.get("filename") or path.name),
+                str(item.get("content_type") or "image/png"),
+            ))
+        return images
+
+    def _cleanup_job_inputs(self, job_id: str) -> None:
+        path = self._input_root() / job_id
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+    def _enqueue(
         self,
         *,
         job_id: str,
         identity: dict[str, object],
         request: dict[str, object],
+        job_type: str,
         base_url: str = "",
         reserved_quota: int = 0,
     ) -> dict[str, object]:
@@ -242,7 +315,7 @@ class ImageJobService:
         now = _now_iso()
         job = {
             "id": job_id,
-            "type": "image.generation",
+            "type": job_type or "image.generation",
             "status": "queued",
             "owner": self._normalize_owner(identity),
             "request": normalized_request,
@@ -269,6 +342,95 @@ class ImageJobService:
             if self.coordinator is not None:
                 self.coordinator.enqueue(str(job.get("id") or ""))
             return self._public_job(job)
+
+    def enqueue_generation(
+        self,
+        *,
+        job_id: str,
+        identity: dict[str, object],
+        request: dict[str, object],
+        base_url: str = "",
+        reserved_quota: int = 0,
+    ) -> dict[str, object]:
+        return self._enqueue(
+            job_id=job_id,
+            identity=identity,
+            request=request,
+            job_type="image.generation",
+            base_url=base_url,
+            reserved_quota=reserved_quota,
+        )
+
+    def enqueue_edit(
+        self,
+        *,
+        job_id: str,
+        identity: dict[str, object],
+        request: dict[str, object],
+        images: list[tuple[bytes, str, str]],
+        base_url: str = "",
+        reserved_quota: int = 0,
+    ) -> dict[str, object]:
+        if not images:
+            raise ValueError("image file is required")
+        stored = self._store_edit_inputs(job_id, images)
+        payload = dict(request)
+        payload["images"] = stored
+        try:
+            return self._enqueue(
+                job_id=job_id,
+                identity=identity,
+                request=payload,
+                job_type="image.edit",
+                base_url=base_url,
+                reserved_quota=reserved_quota,
+            )
+        except Exception:
+            self._cleanup_job_inputs(job_id)
+            raise
+
+    @staticmethod
+    def to_openai_task(job: dict[str, object]) -> dict[str, object]:
+        status = _TASK_STATUS_MAP.get(str(job.get("status") or ""), "submitted")
+        payload: dict[str, object] = {
+            "task_id": job.get("id"),
+            "status": status,
+        }
+        if status == "completed":
+            payload["result"] = {"images": ImageJobService._task_images(job)}
+        elif status == "failed":
+            error = job.get("error") if isinstance(job.get("error"), dict) else {}
+            payload["error"] = {
+                "message": str((error or {}).get("message") or "image-generation task failed")
+            }
+        return payload
+
+    @staticmethod
+    def _task_images(job: dict[str, object]) -> list[dict[str, object]]:
+        images: list[dict[str, object]] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add(*, url: object = None, b64: object = None) -> None:
+            item: dict[str, object] = {}
+            url_text = _clean(url)
+            b64_text = _clean(b64)
+            if url_text:
+                item["url"] = url_text
+            if b64_text:
+                item["b64_json"] = b64_text
+            key = (url_text, b64_text)
+            if item and key not in seen:
+                seen.add(key)
+                images.append(item)
+
+        for asset in job.get("assets") or []:
+            if isinstance(asset, dict):
+                add(url=asset.get("url"))
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        for item in (result or {}).get("data") or []:
+            if isinstance(item, dict):
+                add(url=item.get("url"), b64=item.get("b64_json"))
+        return images
 
     def list_jobs(
         self,
@@ -354,6 +516,7 @@ class ImageJobService:
                 self._save_job(next_job)
                 if self.coordinator is not None:
                     self.coordinator.complete(normalized_id)
+                self._cleanup_job_inputs(normalized_id)
                 return self._public_job(next_job)
         return None
 
@@ -379,15 +542,27 @@ class ImageJobService:
 
         request = job.get("request") if isinstance(job.get("request"), dict) else {}
         job_base_url = _clean(job.get("base_url")) or _clean(base_url)
+        job_type = _clean(job.get("type")) or "image.generation"
         try:
-            result = chatgpt_service.generate_with_pool(
-                request.get("prompt"),
-                request.get("model"),
-                request.get("n"),
-                request.get("size"),
-                request.get("response_format"),
-                job_base_url,
-            )
+            if job_type == "image.edit":
+                result = chatgpt_service.edit_with_pool(
+                    request.get("prompt"),
+                    self._load_edit_images(request),
+                    request.get("model"),
+                    request.get("n"),
+                    request.get("size"),
+                    request.get("response_format"),
+                    job_base_url,
+                )
+            else:
+                result = chatgpt_service.generate_with_pool(
+                    request.get("prompt"),
+                    request.get("model"),
+                    request.get("n"),
+                    request.get("size"),
+                    request.get("response_format"),
+                    job_base_url,
+                )
             success_count = _count_success_items(result, _safe_int(request.get("n"), 1))
             with self._lock:
                 index = self._find_index(str(job.get("id") or ""))
@@ -398,7 +573,7 @@ class ImageJobService:
                     owner=next_job.get("owner") if isinstance(next_job.get("owner"), dict) else {},
                     result=result,
                     job_id=str(next_job.get("id") or ""),
-                    source="image.generation",
+                    source="image.edit" if job_type == "image.edit" else "image.generation",
                     model=str(request.get("model") or ""),
                     prompt=str(request.get("prompt") or ""),
                     base_url=job_base_url,
@@ -425,6 +600,7 @@ class ImageJobService:
                 self._save_job(next_job)
                 if self.coordinator is not None:
                     self.coordinator.complete(str(next_job.get("id") or claimed_job_id or ""))
+                self._cleanup_job_inputs(str(next_job.get("id") or claimed_job_id or ""))
                 return self._public_job(next_job)
         except Exception as exc:
             with self._lock:
@@ -439,6 +615,8 @@ class ImageJobService:
                     self.coordinator.complete(str(next_job.get("id") or claimed_job_id or ""))
                     if next_job.get("status") == "queued":
                         self.coordinator.requeue(str(next_job.get("id") or ""))
+                if next_job.get("status") in TERMINAL_STATUSES:
+                    self._cleanup_job_inputs(str(next_job.get("id") or claimed_job_id or ""))
                 return self._public_job(next_job)
 
     def recover_stale_running_jobs(self, *, stale_after_seconds: int | None = None) -> list[dict[str, object]]:

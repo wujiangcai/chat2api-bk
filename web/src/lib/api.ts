@@ -1048,8 +1048,82 @@ export async function batchUpdateAccounts(
   });
 }
 
+type ImageTask = {
+  task_id?: string;
+  status?: string;
+  result?: { images?: Array<{ url?: string; b64_json?: string }> };
+  error?: { message?: string };
+  data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
+  created?: number;
+};
+
+type LegacyImageResult = { created: number; data: Array<{ b64_json: string; revised_prompt?: string }> };
+
+async function bytesToBase64(bytes: ArrayBuffer): Promise<string> {
+  const binary = Array.from(new Uint8Array(bytes), (value) => String.fromCharCode(value)).join("");
+  return btoa(binary);
+}
+
+async function imageTaskToLegacyResult(task: ImageTask): Promise<LegacyImageResult> {
+  const images = task.result?.images || [];
+  const data: LegacyImageResult["data"] = [];
+  for (const item of images) {
+    if (item.b64_json) {
+      data.push({ b64_json: item.b64_json });
+      continue;
+    }
+    if (!item.url) {
+      continue;
+    }
+    const response = await fetch(item.url);
+    if (!response.ok) {
+      throw new Error(`failed to download generated image (${response.status})`);
+    }
+    data.push({ b64_json: await bytesToBase64(await response.arrayBuffer()) });
+  }
+  if (!data.length) {
+    throw new Error("image task completed without image payloads");
+  }
+  return { created: Math.floor(Date.now() / 1000), data };
+}
+
+async function waitForImageTask(taskId: string, signal?: AbortSignal): Promise<ImageTask> {
+  const deadline = Date.now() + 6 * 60 * 1000;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    const task = await httpRequest<ImageTask>(`/v1/tasks/${taskId}`, { signal });
+    if (task.status === "completed") {
+      return task;
+    }
+    if (task.status === "failed") {
+      throw new Error(task.error?.message || "image task failed");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+  }
+  throw new Error("image task timed out");
+}
+
+async function resolveImageResponse(payload: ImageTask, signal?: AbortSignal): Promise<LegacyImageResult> {
+  if (Array.isArray(payload.data) && payload.data.some((item) => item.b64_json || item.url)) {
+    return {
+      created: payload.created || Math.floor(Date.now() / 1000),
+      data: payload.data.map((item) => ({
+        b64_json: item.b64_json || "",
+        revised_prompt: item.revised_prompt,
+      })),
+    };
+  }
+  const taskId = payload.task_id;
+  if (!taskId) {
+    throw new Error("image generation did not return images or a task_id");
+  }
+  return imageTaskToLegacyResult(await waitForImageTask(taskId, signal));
+}
+
 export async function generateImage(prompt: string, model?: ImageModel, size?: string, signal?: AbortSignal) {
-  return httpRequest<{ created: number; data: Array<{ b64_json: string; revised_prompt?: string }> }>(
+  const payload = await httpRequest<ImageTask>(
     "/v1/images/generations",
     {
       method: "POST",
@@ -1059,10 +1133,12 @@ export async function generateImage(prompt: string, model?: ImageModel, size?: s
         ...(size ? { size } : {}),
         n: 1,
         response_format: "b64_json",
+        async: true,
       },
       signal,
     },
   );
+  return resolveImageResponse(payload, signal);
 }
 
 export async function editImage(
@@ -1086,8 +1162,9 @@ export async function editImage(
     formData.append("size", size);
   }
   formData.append("n", "1");
+  formData.append("async", "true");
 
-  return httpRequest<{ created: number; data: Array<{ b64_json: string; revised_prompt?: string }> }>(
+  const payload = await httpRequest<ImageTask>(
     "/v1/images/edits",
     {
       method: "POST",
@@ -1095,6 +1172,7 @@ export async function editImage(
       signal,
     },
   );
+  return resolveImageResponse(payload, signal);
 }
 
 export async function fetchSettingsConfig() {

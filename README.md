@@ -7,6 +7,7 @@
 
 - [生产 Compose 部署模板](deploy/production/README.md)
 - [中文部署与运维手册](docs/OPERATIONS.zh-CN.md)
+- [异步生图任务 / Cloudflare 524](docs/ASYNC-IMAGE-TASKS.md)
 - [功能状态清单](docs/feature-status.en.md)
 
 > [!WARNING]

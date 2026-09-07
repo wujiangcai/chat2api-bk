@@ -5,7 +5,7 @@ import time
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.support import (
@@ -23,6 +23,7 @@ from api.support import (
 from services.account_service import account_service
 from services.chatgpt_service import ChatGPTService, ImageGenerationError
 from services.image_asset_service import image_asset_service
+from services.image_job_service import image_job_service
 from services.log_service import (
     LOG_TYPE_CALL,
     log_service,
@@ -31,6 +32,7 @@ from utils.helper import anthropic_sse_stream, is_image_chat_request, sse_json_s
 
 
 class ImageGenerationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     prompt: str = Field(..., min_length=1)
     model: str = "gpt-image-2"
     n: int = Field(default=1, ge=1, le=4)
@@ -38,6 +40,7 @@ class ImageGenerationRequest(BaseModel):
     response_format: str = "b64_json"
     history_disabled: bool = True
     stream: bool | None = None
+    async_mode: bool | None = Field(default=None, alias="async")
 
 
 class ChatCompletionRequest(BaseModel):
@@ -69,6 +72,35 @@ class AnthropicMessageRequest(BaseModel):
 
 def _identity_detail(identity: dict[str, object]) -> dict[str, object]:
     return {"key_id": identity.get("id"), "key_name": identity.get("name"), "role": identity.get("role")}
+
+
+def _as_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return None
+
+
+def _wants_async(request: Request, explicit: bool | None) -> bool:
+    if explicit is True:
+        return True
+    if explicit is False:
+        return False
+    prefer = (request.headers.get("prefer") or "").lower()
+    return "respond-async" in prefer
+
+
+def _task_accepted(job: dict[str, object]) -> JSONResponse:
+    return JSONResponse(
+        {"task_id": job.get("id"), "status": "submitted"},
+        status_code=202,
+    )
 
 
 def _collect_urls(value: object) -> list[str]:
@@ -199,6 +231,21 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
                 ),
                 media_type="text/event-stream",
             )
+        if _wants_async(request, body.async_mode):
+            job_id = image_job_service.new_job_id()
+            try:
+                job = image_job_service.enqueue_generation(
+                    job_id=job_id,
+                    identity=identity,
+                    request=body.model_dump(mode="python"),
+                    base_url=base_url,
+                    reserved_quota=reserved_quota,
+                )
+            except Exception:
+                refund_quota(identity, reserved_quota)
+                raise
+            _log_call("文生图任务已提交", identity, "/v1/images/generations", body.model, started, {"task_id": job.get("id")})
+            return _task_accepted(job)
         try:
             result = await run_in_threadpool(
                 chatgpt_service.generate_with_pool, body.prompt, body.model, body.n, body.size, body.response_format, base_url
@@ -229,6 +276,7 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
             size: str | None = Form(default=None),
             response_format: str = Form(default="b64_json"),
             stream: bool | None = Form(default=None),
+            async_mode: bool | None = Form(default=None, alias="async"),
     ):
         identity = require_permission(authorization, "image.edit")
         if n < 1 or n > 4:
@@ -263,6 +311,28 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
                 )),
                 media_type="text/event-stream",
             )
+        if _wants_async(request, async_mode):
+            job_id = image_job_service.new_job_id()
+            try:
+                job = image_job_service.enqueue_edit(
+                    job_id=job_id,
+                    identity=identity,
+                    request={
+                        "prompt": prompt,
+                        "model": model,
+                        "n": n,
+                        "size": size,
+                        "response_format": response_format,
+                    },
+                    images=images,
+                    base_url=base_url,
+                    reserved_quota=reserved_quota,
+                )
+            except Exception:
+                refund_quota(identity, reserved_quota)
+                raise
+            _log_call("图生图任务已提交", identity, "/v1/images/edits", model, started, {"task_id": job.get("id")})
+            return _task_accepted(job)
         try:
             result = await run_in_threadpool(
                 chatgpt_service.edit_with_pool, prompt, images, model, n, size, response_format, base_url
@@ -280,6 +350,14 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
             refund_quota(identity, reserved_quota)
             _log_call("图生图调用失败", identity, "/v1/images/edits", model, started, {"error": str(exc)}, "failed")
             raise
+
+    @router.get("/v1/tasks/{task_id}")
+    async def get_image_task(task_id: str, authorization: str | None = Header(default=None)):
+        identity = require_identity(authorization)
+        job = image_job_service.get_job_for_identity(task_id, identity)
+        if job is None:
+            raise HTTPException(status_code=404, detail={"error": "task not found"})
+        return image_job_service.to_openai_task(job)
 
     @router.post("/v1/chat/completions")
     async def create_chat_completion(body: ChatCompletionRequest, authorization: str | None = Header(default=None)):
