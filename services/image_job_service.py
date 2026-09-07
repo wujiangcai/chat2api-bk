@@ -6,7 +6,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Condition, Event, Lock, Thread
 from typing import Any, Literal
 
 from services.auth_service import AuthService, auth_service
@@ -18,6 +18,7 @@ from services.storage.base import StorageBackend
 ImageJobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+_TASK_WAIT_MAX_SECONDS = 25.0
 _TASK_STATUS_MAP = {
     "queued": "submitted",
     "running": "processing",
@@ -101,7 +102,13 @@ class ImageJobService:
         self.retry_delay_seconds = max(0, int(retry_delay_seconds if retry_delay_seconds is not None else os.getenv("IMAGE_JOB_RETRY_DELAY_SECONDS", "5") or "5"))
         self.stale_running_seconds = max(30, int(stale_running_seconds if stale_running_seconds is not None else os.getenv("IMAGE_JOB_STALE_RUNNING_SECONDS", "900") or "900"))
         self._lock = Lock()
+        self._changed = Condition(self._lock)
         self._jobs = self._load_jobs()
+        if self._compact_stored_results():
+            try:
+                self._save_jobs()
+            except Exception:
+                pass
 
     @staticmethod
     def new_job_id() -> str:
@@ -208,6 +215,47 @@ class ImageJobService:
 
     def _save_job(self, job: dict[str, object]) -> None:
         self.storage.append_collection_item("image_jobs", job)
+        self._changed.notify_all()
+
+    @staticmethod
+    def _result_without_b64(result: object, *, assets: object = None) -> object:
+        """Drop inline b64 once a public URL exists so poll JSON stays small."""
+        asset_urls = [
+            _clean(item.get("url"))
+            for item in (assets or [])
+            if isinstance(item, dict) and _clean(item.get("url"))
+        ]
+        if not isinstance(result, dict):
+            return result
+        data = result.get("data")
+        if not isinstance(data, list):
+            return result
+        changed = False
+        slim_data: list[object] = []
+        for item in data:
+            if not isinstance(item, dict) or not item.get("b64_json"):
+                slim_data.append(item)
+                continue
+            if _clean(item.get("url")) or asset_urls:
+                next_item = {key: value for key, value in item.items() if key != "b64_json"}
+                slim_data.append(next_item)
+                changed = True
+            else:
+                slim_data.append(item)
+        if not changed:
+            return result
+        slim = dict(result)
+        slim["data"] = slim_data
+        return slim
+
+    def _compact_stored_results(self) -> bool:
+        changed = False
+        for job in self._jobs:
+            compact = self._result_without_b64(job.get("result"), assets=job.get("assets"))
+            if compact is not job.get("result"):
+                job["result"] = compact
+                changed = True
+        return changed
 
     def _refresh_jobs_from_storage(self) -> None:
         self._jobs = self._load_jobs()
@@ -416,9 +464,11 @@ class ImageJobService:
             b64_text = _clean(b64)
             if url_text:
                 item["url"] = url_text
-            if b64_text:
+            elif b64_text:
+                # Keep b64 only when no public URL exists. Polling a 3MB JSON
+                # through Cloudflare is slower than downloading the PNG.
                 item["b64_json"] = b64_text
-            key = (url_text, b64_text)
+            key = (url_text, b64_text if "b64_json" in item else "")
             if item and key not in seen:
                 seen.add(key)
                 images.append(item)
@@ -482,6 +532,32 @@ class ImageJobService:
                 if job.get("id") == normalized_id and self._can_access(identity, job):
                     return self._public_job(job)
         return None
+
+    def wait_for_job(
+        self,
+        job_id: str,
+        identity: dict[str, object],
+        timeout: float,
+    ) -> dict[str, object] | None:
+        """Block until the job is terminal or *timeout* seconds elapse."""
+        normalized_id = _clean(job_id)
+        wait_for = min(max(0.0, float(timeout or 0)), _TASK_WAIT_MAX_SECONDS)
+        deadline = time.monotonic() + wait_for
+        with self._changed:
+            while True:
+                found: dict[str, object] | None = None
+                for job in self._jobs:
+                    if job.get("id") == normalized_id and self._can_access(identity, job):
+                        found = job
+                        break
+                if found is None:
+                    return None
+                if str(found.get("status") or "") in TERMINAL_STATUSES or wait_for <= 0:
+                    return self._public_job(found)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._public_job(found)
+                self._changed.wait(timeout=remaining)
 
     def _refund_reserved_quota(self, job: dict[str, object], units: int, refund_reason: str) -> int:
         owner = job.get("owner") if isinstance(job.get("owner"), dict) else {}
@@ -588,7 +664,7 @@ class ImageJobService:
                 now = _now_iso()
                 next_job.update({
                     "status": "succeeded",
-                    "result": result,
+                    "result": self._result_without_b64(result, assets=assets),
                     "assets": assets,
                     "error": None,
                     "cost_units": success_count,

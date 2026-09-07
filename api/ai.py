@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import time
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -352,9 +352,18 @@ def create_router(chatgpt_service: ChatGPTService) -> APIRouter:
             raise
 
     @router.get("/v1/tasks/{task_id}")
-    async def get_image_task(task_id: str, authorization: str | None = Header(default=None)):
+    async def get_image_task(
+        task_id: str,
+        authorization: str | None = Header(default=None),
+        wait: float = Query(default=0, ge=0, le=25),
+    ):
         identity = require_identity(authorization)
-        job = image_job_service.get_job_for_identity(task_id, identity)
+        if wait > 0:
+            job = await run_in_threadpool(
+                image_job_service.wait_for_job, task_id, identity, wait
+            )
+        else:
+            job = image_job_service.get_job_for_identity(task_id, identity)
         if job is None:
             raise HTTPException(status_code=404, detail={"error": "task not found"})
         return image_job_service.to_openai_task(job)

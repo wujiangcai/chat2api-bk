@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -268,7 +270,39 @@ class ImageJobQueueTests(unittest.TestCase):
             completed["result"]["images"][0].get("b64_json")
             or completed["result"]["images"][0].get("url")
         )
+        self.assertTrue(completed["result"]["images"][0].get("url"))
+        self.assertFalse(completed["result"]["images"][0].get("b64_json"))
+        stored = service.get_job("job_edit")
+        stored_data = ((stored.get("result") or {}).get("data") or [{}])[0]
+        self.assertFalse(stored_data.get("b64_json"))
         self.assertFalse((self.base_dir / "job-inputs" / "job_edit").exists())
+
+    def test_wait_for_job_returns_when_worker_finishes(self) -> None:
+        storage, auth, assets, coordinator, _ = self.create_services()
+        service = ImageJobService(storage, auth, assets, coordinator=coordinator)
+        chatgpt = StubChatGPTService()
+        user, _, key = auth.register_user("user@example.com", "StrongPass123")
+        identity = {**key, **user, "user_id": user["id"], "key_id": key["id"]}
+        service.enqueue_generation(
+            job_id="job_wait",
+            identity=identity,
+            request={"prompt": "cat", "n": 1, "response_format": "b64_json"},
+        )
+
+        def _run() -> None:
+            time.sleep(0.15)
+            service.run_next(chatgpt, "http://testserver")
+
+        worker = threading.Thread(target=_run)
+        worker.start()
+        waited = service.wait_for_job("job_wait", identity, 2.0)
+        worker.join(timeout=2.0)
+        self.assertIsNotNone(waited)
+        self.assertEqual(waited["status"], "succeeded")
+        task = service.to_openai_task(waited)
+        self.assertEqual(task["status"], "completed")
+        self.assertTrue(task["result"]["images"][0].get("url"))
+        self.assertFalse(task["result"]["images"][0].get("b64_json"))
 
 
 if __name__ == "__main__":

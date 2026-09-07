@@ -64,9 +64,13 @@ multipart/form-data:
 ## 轮询
 
 ```http
-GET /v1/tasks/{task_id}
+GET /v1/tasks/{task_id}?wait=15
 Authorization: Bearer sk-app-xxxx
 ```
+
+`wait` 最长 25 秒。任务还在排队/生成时会挂起，完成后立刻返回。Cloudflare origin 超时约 100 秒，所以单次 wait 必须远小于这个值。客户端循环带 `wait` 即可，不必自己 sleep 3 秒。
+
+完成态默认只返回 `result.images[].url`，不再塞 3MB `b64_json`。下游下载 PNG 比把 base64 JSON 拉回中国快得多。
 
 | 本接口 `status` | 内部 job 状态 | 含义 |
 |---|---|---|
@@ -75,7 +79,7 @@ Authorization: Bearer sk-app-xxxx
 | `completed` | `succeeded` | `result.images[]` 含 `url` 和/或 `b64_json` |
 | `failed` | `failed` / `cancelled` | 见 `error.message` |
 
-建议：提交后 2 秒开始轮询，间隔 3 秒，总等待 5–6 分钟。`gpt-image-2` 图生图常见 2–4 分钟。
+建议：提交后立刻 `GET /v1/tasks/{id}?wait=15`，未完成再请求。`gpt-image-2` 图生图常见 2–4 分钟。
 
 完成示例：
 
@@ -109,7 +113,7 @@ Authorization: Bearer sk-app-xxxx
 | 客户端 | 行为 |
 |---|---|
 | 旧 OpenAI SDK / 不带 `async` | 仍同步等待完整 `data[].b64_json` |
-| `viskit-studio` `openai_compatible` 适配器 | 默认 `async=true` + `Prefer: respond-async`，轮询 360 秒 |
+| `viskit-studio` `openai_compatible` 适配器 | 默认 `async=true` + `Prefer: respond-async`，`GET ?wait=15` 长轮询，排队不计生成超时 |
 | 本仓库 Web 画图页 | 提交后轮询 `/v1/tasks/{id}`，对调用方仍返回原来的 `{created, data}` |
 
 旧上游若拒绝 `async` 字段（HTTP 422），`viskit-studio` 会去掉该字段再提交一次。
