@@ -457,8 +457,24 @@ class AccountService:
                 next_item["consecutive_fail"] = int(next_item.get("consecutive_fail") or 0) + 1
                 threshold = config.auto_disable_consecutive_fail
                 if threshold > 0 and next_item["consecutive_fail"] >= threshold and not next_item.get("disabled"):
-                    next_item["disabled"] = True
-                    auto_disabled = True
+                    others_available = any(
+                        self._clean_token(item.get("access_token")) != access_token
+                        and self._is_image_account_available(item)
+                        for item in self._accounts
+                    )
+                    if others_available:
+                        next_item["disabled"] = True
+                        auto_disabled = True
+                    else:
+                        log_service.add(
+                            LOG_TYPE_ACCOUNT,
+                            "连续失败但保留最后可用账号",
+                            {
+                                "token": anonymize_token(access_token),
+                                "consecutive_fail": next_item.get("consecutive_fail"),
+                                "threshold": threshold,
+                            },
+                        )
             account = self._normalize_account(next_item)
             if account is None:
                 return None

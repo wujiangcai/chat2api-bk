@@ -23,6 +23,8 @@ export type Account = {
   restoreAt?: string | null;
   success: number;
   fail: number;
+  disabled?: boolean;
+  consecutiveFail?: number;
   lastUsedAt: string | null;
 };
 
@@ -1015,6 +1017,8 @@ export async function updateAccount(
     type?: AccountType;
     status?: AccountStatus;
     quota?: number;
+    disabled?: boolean;
+    reset_consecutive_fail?: boolean;
   },
 ) {
   return httpRequest<AccountUpdateResponse>("/api/accounts/update", {
@@ -1037,6 +1041,8 @@ export async function batchUpdateAccounts(
     type?: AccountType;
     status?: AccountStatus;
     quota?: number;
+    disabled?: boolean;
+    reset_consecutive_fail?: boolean;
   },
 ) {
   return httpRequest<AccountBatchUpdateResponse>("/api/accounts/batch-update", {

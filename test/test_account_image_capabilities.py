@@ -205,6 +205,43 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(updated["status"], "正常")
             self.assertTrue(updated["image_quota_unknown"])
 
+    def test_disabled_account_is_not_available(self) -> None:
+        self.assertFalse(
+            AccountService._is_image_account_available(
+                {"status": "正常", "type": "Free", "quota": 20, "disabled": True}
+            )
+        )
+
+    def test_auto_disable_keeps_last_available_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_accounts(["token-keep", "token-drop"])
+            for token in ("token-keep", "token-drop"):
+                service.update_account(token, {"status": "正常", "quota": 5, "disabled": False})
+
+            with patch("services.account_service.config") as mock_config:
+                mock_config.auto_disable_consecutive_fail = 1
+                first = service.mark_image_result("token-drop", success=False)
+                second = service.mark_image_result("token-keep", success=False)
+
+            self.assertTrue(first["disabled"])
+            self.assertTrue(first["auto_disabled"])
+            self.assertFalse(second["disabled"])
+            self.assertFalse(second["auto_disabled"])
+            self.assertEqual(second["consecutive_fail"], 1)
+            self.assertTrue(
+                AccountService._is_image_account_available(service.get_account("token-keep") or {})
+            )
+
+    def test_enabling_account_clears_consecutive_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_accounts(["token-1"])
+            service.update_account("token-1", {"disabled": True, "consecutive_fail": 5, "quota": 9})
+            updated = service.update_account("token-1", {"disabled": False})
+            self.assertFalse(updated["disabled"])
+            self.assertEqual(updated["consecutive_fail"], 0)
+
 
 class TokenLogTests(unittest.TestCase):
     def test_anonymize_token_hides_raw_value(self) -> None:

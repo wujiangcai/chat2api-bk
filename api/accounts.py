@@ -77,6 +77,7 @@ class AccountBatchUpdateRequest(BaseModel):
     status: str | None = None
     quota: int | None = None
     disabled: bool | None = None
+    reset_consecutive_fail: bool = False
 
 
 class CPAPoolCreateRequest(BaseModel):
@@ -450,6 +451,8 @@ def create_router() -> APIRouter:
             "quota": body.quota,
             "disabled": body.disabled,
         }.items() if value is not None}
+        if body.reset_consecutive_fail:
+            updates["consecutive_fail"] = 0
         if not updates:
             raise HTTPException(status_code=400, detail={"error": "no updates provided"})
         updated = 0

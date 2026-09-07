@@ -79,6 +79,8 @@ docker compose --env-file deploy/production/.env.production exec api \
 
 图生图结果里不要把参考图 `file_id` 当成生成图；`openai_backend_api` 会过滤上传垫图的 file id，避免把原图当结果返回。
 
+账号连续失败达到 `auto_disable_consecutive_fail`（默认 5）会把该号标为调度禁用，**不会改 `status`**。号池页用「禁用账户」卡片、行内解锁按钮和「一键恢复禁用账号」管理。自动禁用不会关掉最后一个仍可用的号，避免网关抖动把整池打挂。
+
 ## 5. 测试门禁
 
 后端：

@@ -296,7 +296,7 @@ Receipt seller information comes from `BUSINESS_LEGAL_NAME`, `BUSINESS_TAX_ID`, 
 
 - 自动刷新账号邮箱、类型、额度和恢复时间
 - 轮询可用账号执行图片生成与图片编辑
-- 账号连续失败达到阈值后会自动禁用并切换到其他可用账号，可通过 `auto_disable_consecutive_fail` 配置阈值（默认 5，设为 0 可关闭）
+- 账号连续失败达到阈值后会自动调度禁用并切换到其他可用账号（`disabled=true`，状态字段仍可能是「正常」）。号池页可单独/批量启用或禁用，并支持一键恢复。自动禁用不会关掉最后一个可用账号。阈值见 `auto_disable_consecutive_fail`（默认 5，设为 0 可关闭）
 - 支持在账号池页面手动禁用 / 启用账号，禁用账号不会参与生图轮询
 - 遇到 Token 失效类错误时自动剔除无效 Token
 - 定时检查限流账号并自动刷新

@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  Unlock,
   UserRound,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -99,9 +100,17 @@ function isUnlimitedImageQuotaAccount(account: Account) {
   return account.type === "Pro" || account.type === "ProLite";
 }
 
-// 待清理：额度耗尽(非无限套餐)、异常状态、或失败数明显多于成功数。用于帮助用户快速定位死号。
+function isDisabledAccount(account: Account) {
+  return account.disabled === true || account.status === "禁用";
+}
+
+function displayStatus(account: Account): AccountStatus {
+  return isDisabledAccount(account) ? "禁用" : account.status;
+}
+
+// 待清理：调度禁用、额度耗尽、异常，或失败明显多于成功。
 function isNeedsAttention(account: Account) {
-  if (account.status === "异常") {
+  if (isDisabledAccount(account) || account.status === "异常") {
     return true;
   }
   if (!isUnlimitedImageQuotaAccount(account) && (account.quota ?? 0) <= 0 && !account.imageQuotaUnknown) {
@@ -155,7 +164,7 @@ function formatRestoreAt(value?: string | null) {
 }
 
 function formatQuotaSummary(accounts: Account[]) {
-  const availableAccounts = accounts.filter((account) => account.status === "正常");
+  const availableAccounts = accounts.filter((account) => account.status === "正常" && !isDisabledAccount(account));
   if (availableAccounts.some(isUnlimitedImageQuotaAccount)) {
     return "∞";
   }
@@ -210,9 +219,11 @@ function AccountsPageContent() {
   const [editType, setEditType] = useState<AccountType>("Free");
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
   const [editQuota, setEditQuota] = useState("0");
+  const [editDisabled, setEditDisabled] = useState(false);
   const [batchEditOpen, setBatchEditOpen] = useState(false);
   const [batchType, setBatchType] = useState<AccountType | "keep">("keep");
   const [batchStatus, setBatchStatus] = useState<AccountStatus | "keep">("keep");
+  const [batchDisabled, setBatchDisabled] = useState<"keep" | "enable" | "disable">("keep");
   const [batchQuota, setBatchQuota] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -252,7 +263,8 @@ function AccountsPageContent() {
       const searchMatched =
         normalizedQuery.length === 0 || (account.email ?? "").toLowerCase().includes(normalizedQuery);
       const typeMatched = typeFilter === "all" || account.type === typeFilter;
-      const statusMatched = statusFilter === "all" || account.status === statusFilter;
+      const shownStatus = displayStatus(account);
+      const statusMatched = statusFilter === "all" || shownStatus === statusFilter;
       const attentionMatched = !needsAttentionOnly || isNeedsAttention(account);
       return searchMatched && typeMatched && statusMatched && attentionMatched;
     });
@@ -267,10 +279,10 @@ function AccountsPageContent() {
 
   const summary = useMemo(() => {
     const total = accounts.length;
-    const active = accounts.filter((item) => item.status === "正常").length;
-    const limited = accounts.filter((item) => item.status === "限流").length;
+    const disabled = accounts.filter((item) => isDisabledAccount(item)).length;
+    const active = accounts.filter((item) => item.status === "正常" && !isDisabledAccount(item)).length;
+    const limited = accounts.filter((item) => item.status === "限流" && !isDisabledAccount(item)).length;
     const abnormal = accounts.filter((item) => item.status === "异常").length;
-    const disabled = accounts.filter((item) => item.status === "禁用").length;
     const quota = formatQuotaSummary(accounts);
 
     return { total, active, limited, abnormal, disabled, quota };
@@ -284,6 +296,24 @@ function AccountsPageContent() {
   const abnormalTokens = useMemo(() => {
     return accounts.filter((item) => item.status === "异常").map((item) => item.access_token);
   }, [accounts]);
+
+  const disabledTokens = useMemo(() => {
+    return accounts.filter((item) => isDisabledAccount(item)).map((item) => item.access_token);
+  }, [accounts]);
+
+  const selectedDisabledTokens = useMemo(() => {
+    const selectedSet = new Set(selectedIds);
+    return accounts
+      .filter((item) => selectedSet.has(item.id) && isDisabledAccount(item))
+      .map((item) => item.access_token);
+  }, [accounts, selectedIds]);
+
+  const selectedEnabledTokens = useMemo(() => {
+    const selectedSet = new Set(selectedIds);
+    return accounts
+      .filter((item) => selectedSet.has(item.id) && !isDisabledAccount(item))
+      .map((item) => item.access_token);
+  }, [accounts, selectedIds]);
 
   const paginationItems = useMemo(() => {
     const items: (number | "...")[] = [];
@@ -364,6 +394,7 @@ function AccountsPageContent() {
     setEditType(account.type);
     setEditStatus(account.status);
     setEditQuota(String(account.quota));
+    setEditDisabled(isDisabledAccount(account));
   };
 
   const handleUpdateAccount = async () => {
@@ -377,6 +408,7 @@ function AccountsPageContent() {
         type: editType,
         status: editStatus,
         quota: Number(editQuota || 0),
+        disabled: editDisabled,
       });
       setAccounts(normalizeAccounts(data.items));
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.id === id)));
@@ -397,14 +429,22 @@ function AccountsPageContent() {
     }
     setBatchType("keep");
     setBatchStatus("keep");
+    setBatchDisabled("keep");
     setBatchQuota("");
     setBatchEditOpen(true);
   };
 
   const handleBatchUpdate = async () => {
-    const updates: { type?: AccountType; status?: AccountStatus; quota?: number } = {};
+    const updates: {
+      type?: AccountType;
+      status?: AccountStatus;
+      quota?: number;
+      disabled?: boolean;
+    } = {};
     if (batchType !== "keep") updates.type = batchType;
     if (batchStatus !== "keep") updates.status = batchStatus;
+    if (batchDisabled === "enable") updates.disabled = false;
+    if (batchDisabled === "disable") updates.disabled = true;
     if (batchQuota.trim() !== "") {
       const q = Number(batchQuota);
       if (Number.isNaN(q) || q < 0) {
@@ -427,6 +467,25 @@ function AccountsPageContent() {
       toast.success(`已更新 ${data.updated} 个账户`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "批量修改失败";
+      toast.error(message);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleSetDisabled = async (tokens: string[], disabled: boolean) => {
+    if (tokens.length === 0) {
+      toast.error(disabled ? "请先选择要禁用的账户" : "没有需要启用的账户");
+      return;
+    }
+    setIsUpdating(true);
+    try {
+      const data = await batchUpdateAccounts(tokens, { disabled });
+      setAccounts(normalizeAccounts(data.items));
+      setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.id === id)));
+      toast.success(disabled ? `已禁用 ${data.updated} 个账户` : `已启用 ${data.updated} 个账户`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : disabled ? "禁用账户失败" : "启用账户失败";
       toast.error(message);
     } finally {
       setIsUpdating(false);
@@ -541,6 +600,18 @@ function AccountsPageContent() {
                 className="h-11 rounded-xl border-stone-200 bg-white"
               />
             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">调度</label>
+              <Select value={editDisabled ? "disabled" : "enabled"} onValueChange={(value) => setEditDisabled(value === "disabled")}>
+                <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="enabled">启用（参与派号）</SelectItem>
+                  <SelectItem value="disabled">禁用（不参与派号）</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter className="pt-2">
             <Button
@@ -617,6 +688,19 @@ function AccountsPageContent() {
                 className="h-11 rounded-xl border-stone-200 bg-white"
               />
             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">调度</label>
+              <Select value={batchDisabled} onValueChange={(value) => setBatchDisabled(value as "keep" | "enable" | "disable")}>
+                <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="keep">不修改</SelectItem>
+                  <SelectItem value="enable">启用（参与派号）</SelectItem>
+                  <SelectItem value="disable">禁用（不参与派号）</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter className="pt-2">
             <Button
@@ -673,8 +757,33 @@ function AccountsPageContent() {
           {metricCards.map((item) => {
             const Icon = item.icon;
             const value = summary[item.key];
+            const filterValue: AccountStatus | "all" | null =
+              item.key === "total"
+                ? "all"
+                : item.key === "active"
+                  ? "正常"
+                  : item.key === "limited"
+                    ? "限流"
+                    : item.key === "abnormal"
+                      ? "异常"
+                      : item.key === "disabled"
+                        ? "禁用"
+                        : null;
+            const selected = filterValue !== null && statusFilter === filterValue;
             return (
-              <Card key={item.key} className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
+              <Card
+                key={item.key}
+                className={cn(
+                  "rounded-2xl border-white/80 bg-white/90 shadow-sm",
+                  filterValue ? "cursor-pointer transition hover:border-stone-300" : "",
+                  selected ? "border-stone-400 ring-1 ring-stone-300" : "",
+                )}
+                onClick={() => {
+                  if (!filterValue) return;
+                  setStatusFilter(filterValue);
+                  setPage(1);
+                }}
+              >
                 <CardContent className="p-4">
                   <div className="mb-4 flex items-start justify-between">
                     <span className="text-xs font-medium text-stone-400">{item.label}</span>
@@ -813,6 +922,33 @@ function AccountsPageContent() {
                 </Button>
                 <Button
                   variant="ghost"
+                  className="h-8 rounded-lg px-3 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
+                  onClick={() => void handleSetDisabled(selectedDisabledTokens, false)}
+                  disabled={selectedDisabledTokens.length === 0 || isUpdating}
+                >
+                  <Unlock className="size-4" />
+                  启用所选
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-8 rounded-lg px-3 text-stone-600 hover:bg-stone-100"
+                  onClick={() => void handleSetDisabled(selectedEnabledTokens, true)}
+                  disabled={selectedEnabledTokens.length === 0 || isUpdating}
+                >
+                  <Ban className="size-4" />
+                  禁用所选
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-8 rounded-lg px-3 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
+                  onClick={() => void handleSetDisabled(disabledTokens, false)}
+                  disabled={disabledTokens.length === 0 || isUpdating}
+                >
+                  <Unlock className="size-4" />
+                  一键恢复禁用账号
+                </Button>
+                <Button
+                  variant="ghost"
                   className="h-8 rounded-lg px-3 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
                   onClick={() => openDeleteDialog(abnormalTokens, "移除异常账号")}
                   disabled={abnormalTokens.length === 0 || isDeleting}
@@ -860,13 +996,18 @@ function AccountsPageContent() {
                 </thead>
                 <tbody>
                   {currentRows.map((account) => {
-                    const status = statusMeta[account.status];
+                    const shownStatus = displayStatus(account);
+                    const status = statusMeta[shownStatus];
                     const StatusIcon = status.icon;
+                    const disabled = isDisabledAccount(account);
 
                     return (
                       <tr
                         key={account.id}
-                        className="border-b border-stone-100/80 text-sm text-stone-600 transition-colors hover:bg-stone-50/70"
+                        className={cn(
+                          "border-b border-stone-100/80 text-sm text-stone-600 transition-colors hover:bg-stone-50/70",
+                          disabled ? "bg-stone-50/90" : "",
+                        )}
                       >
                         <td className="px-4 py-3">
                           <Checkbox
@@ -908,8 +1049,13 @@ function AccountsPageContent() {
                             className="inline-flex items-center gap-1 rounded-md px-2 py-1"
                           >
                             <StatusIcon className="size-3.5" />
-                            {account.status}
+                            {shownStatus}
                           </Badge>
+                          {disabled && account.status !== "禁用" ? (
+                            <span className="ml-2 rounded-md bg-stone-200 px-1.5 py-0.5 text-[11px] font-medium text-stone-600">
+                              调度关闭
+                            </span>
+                          ) : null}
                           {isNeedsAttention(account) ? (
                             <span className="ml-2 rounded-md bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-700">
                               待清理
@@ -936,9 +1082,28 @@ function AccountsPageContent() {
                           })()}
                         </td>
                         <td className="px-4 py-3 text-stone-500">{account.success}</td>
-                        <td className="px-4 py-3 text-stone-500">{account.fail}</td>
+                        <td className="px-4 py-3 text-stone-500">
+                          <div>{account.fail}</div>
+                          {(account.consecutiveFail ?? 0) > 0 ? (
+                            <div className="text-[11px] text-amber-600">连续 {account.consecutiveFail}</div>
+                          ) : null}
+                        </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1 text-stone-400">
+                            <button
+                              type="button"
+                              className={cn(
+                                "rounded-lg p-2 transition",
+                                disabled
+                                  ? "text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
+                                  : "hover:bg-stone-100 hover:text-stone-700",
+                              )}
+                              title={disabled ? "启用调度" : "禁用调度"}
+                              onClick={() => void handleSetDisabled([account.access_token], !disabled)}
+                              disabled={isUpdating}
+                            >
+                              {disabled ? <Unlock className="size-4" /> : <Ban className="size-4" />}
+                            </button>
                             <button
                               type="button"
                               className="rounded-lg p-2 transition hover:bg-stone-100 hover:text-stone-700"
