@@ -57,6 +57,7 @@ export type SettingsConfig = {
   base_url?: string;
   refresh_account_interval_minute?: number | string;
   image_retention_days?: number | string;
+  image_job_worker_count?: number | string;
   auto_remove_invalid_accounts?: boolean;
   [key: string]: unknown;
 };

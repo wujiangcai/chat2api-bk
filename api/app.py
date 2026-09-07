@@ -25,14 +25,15 @@ def create_app() -> FastAPI:
     async def lifespan(_: FastAPI):
         stop_event = Event()
         account_thread = start_limited_account_watcher(stop_event)
-        image_job_thread = start_image_job_worker(stop_event, image_job_service, chatgpt_service, base_url=config.base_url)
+        image_job_threads = start_image_job_worker(stop_event, image_job_service, chatgpt_service, base_url=config.base_url)
         config.cleanup_old_images()
         try:
             yield
         finally:
             stop_event.set()
             account_thread.join(timeout=1)
-            image_job_thread.join(timeout=1)
+            for image_job_thread in image_job_threads:
+                image_job_thread.join(timeout=1)
 
     app = FastAPI(title="chatgpt2api", version=app_version, lifespan=lifespan)
     app.add_middleware(

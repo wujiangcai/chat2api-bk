@@ -612,6 +612,7 @@ class ChatGPTService:
                         return
                     raise ImageGenerationError(last_error or "image generation failed") from exc
 
+                self.account_service.mark_token_busy(request_token, True)
                 logger.info({
                     "event": "image_generate_start",
                     "request_token": request_token,
@@ -676,6 +677,8 @@ class ChatGPTService:
                         })
                         continue
                     break
+                finally:
+                    self.account_service.mark_token_busy(request_token, False)
 
         if not emitted:
             raise ImageGenerationError(last_error or "image generation failed")
@@ -832,6 +835,7 @@ class ChatGPTService:
                     })
                     break
 
+                self.account_service.mark_token_busy(request_token, True)
                 logger.info({
                     "event": "image_edit_start",
                     "request_token": request_token,
@@ -895,6 +899,8 @@ class ChatGPTService:
                         })
                         continue
                     break
+                finally:
+                    self.account_service.mark_token_busy(request_token, False)
 
         if not image_items:
             raise ImageGenerationError(last_error or "image edit failed")

@@ -233,6 +233,30 @@ class AccountCapabilityTests(unittest.TestCase):
                 AccountService._is_image_account_available(service.get_account("token-keep") or {})
             )
 
+    def test_busy_token_is_not_picked_again(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_accounts(["token-a", "token-b"])
+            service.update_account("token-a", {"status": "正常", "quota": 5, "disabled": False})
+            service.update_account("token-b", {"status": "正常", "quota": 5, "disabled": False})
+            now = __import__("time").monotonic()
+            service._refresh_mono["token-a"] = now
+            service._refresh_mono["token-b"] = now
+            service.mark_token_busy("token-a", True)
+            picked = {service.get_available_access_token() for _ in range(3)}
+            self.assertEqual(picked, {"token-b"})
+
+    def test_recent_refresh_skips_remote_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_accounts(["token-a"])
+            service.update_account("token-a", {"status": "正常", "quota": 5, "disabled": False})
+            service._refresh_mono["token-a"] = service._refresh_mono.get("token-a", 0) or __import__("time").monotonic()
+            with patch.object(service, "refresh_account_state") as refresh:
+                token = service.get_available_access_token()
+            self.assertEqual(token, "token-a")
+            refresh.assert_not_called()
+
     def test_enabling_account_clears_consecutive_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))

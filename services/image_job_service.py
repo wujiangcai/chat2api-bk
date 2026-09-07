@@ -819,28 +819,38 @@ class ImageJobService:
         return None
 
 
+MAX_IMAGE_JOB_WORKERS = 8
+
+
 def start_image_job_worker(
     stop_event: Event,
     job_service: ImageJobService,
     chatgpt_service: Any,
     *,
     base_url: str = "",
-) -> Thread:
+) -> list[Thread]:
+    """Start a pool of workers. Live count follows config.image_job_worker_count."""
     interval = max(0.2, float(os.getenv("IMAGE_JOB_WORKER_INTERVAL_SECONDS", "1") or "1"))
 
-    def worker() -> None:
+    def worker(index: int) -> None:
         while not stop_event.is_set():
+            if index >= config.image_job_worker_count:
+                stop_event.wait(interval)
+                continue
             try:
                 processed = job_service.run_next(chatgpt_service, base_url)
                 if processed is None:
                     stop_event.wait(interval)
             except Exception as exc:
-                print(f"[image-job-worker] fail {exc}")
+                print(f"[image-job-worker-{index}] fail {exc}")
                 stop_event.wait(interval)
 
-    thread = Thread(target=worker, name="image-job-worker", daemon=True)
-    thread.start()
-    return thread
+    threads: list[Thread] = []
+    for index in range(MAX_IMAGE_JOB_WORKERS):
+        thread = Thread(target=worker, args=(index,), name=f"image-job-worker-{index}", daemon=True)
+        thread.start()
+        threads.append(thread)
+    return threads
 
 
 image_job_service = ImageJobService(config.get_storage_backend(), auth_service, coordinator=create_image_job_coordinator_from_env())

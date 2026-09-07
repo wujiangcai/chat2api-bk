@@ -122,7 +122,7 @@ Authorization: Bearer sk-app-xxxx
 
 ## Worker 与落盘
 
-- 进程内 `start_image_job_worker` 轮询 `image_jobs`。
+- 进程内 `start_image_job_worker` 会起最多 8 条线程，真正干活的数量看设置里的「生图并发路数」（默认 2）。
 - 图生图参考图写到 `data/job-inputs/{job_id}/`，任务结束后删除。
 - 成功结果走现有 `image_asset_service.archive_result`，所以管理后台看得到图。
 - 生产建议 `IMAGE_JOB_QUEUE_BACKEND=redis`；当前 Lightsail 实例用 `storage` 轮询，单进程足够。

@@ -135,6 +135,18 @@ class ConfigStore:
         return max(0, value)
 
     @property
+    def image_job_worker_count(self) -> int:
+        """How many image jobs to run at once. 1GB machines should stay at 2-3."""
+        raw = self.data.get("image_job_worker_count")
+        if raw is None or str(raw).strip() == "":
+            raw = os.getenv("IMAGE_JOB_WORKER_COUNT", "2")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 2
+        return max(1, min(8, value))
+
+    @property
     def images_dir(self) -> Path:
         path = DATA_DIR / "images"
         path.mkdir(parents=True, exist_ok=True)
@@ -232,6 +244,7 @@ class ConfigStore:
         data = dict(self.data)
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
         data["image_retention_days"] = self.image_retention_days
+        data["image_job_worker_count"] = self.image_job_worker_count
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["web_allowed_origins"] = self.web_allowed_origins
         data["security_headers_enabled"] = self.security_headers_enabled

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 import base64
 import hashlib
 import json
+import time
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Iterator
 from datetime import datetime, timezone
 
 from curl_cffi.requests import Session
@@ -39,6 +41,9 @@ class AccountService:
         self._lock = Lock()
         self._index = 0
         self._accounts = self._load_accounts()
+        self._busy_tokens: set[str] = set()
+        self._refresh_mono: dict[str, float] = {}
+        self._refresh_ttl_seconds = 120.0
 
     @staticmethod
     def _clean_token(value: Any) -> str:
@@ -283,7 +288,9 @@ class AccountService:
 
     def _pick_next_candidate_token(self, excluded_tokens: set[str] | None = None) -> str:
         with self._lock:
-            tokens = self._list_available_candidate_tokens(excluded_tokens)
+            excluded = {self._clean_token(token) for token in (excluded_tokens or set()) if self._clean_token(token)}
+            excluded |= set(self._busy_tokens)
+            tokens = self._list_available_candidate_tokens(excluded)
             if not tokens:
                 raise RuntimeError("no available image quota")
             access_token = tokens[self._index % len(tokens)]
@@ -317,7 +324,14 @@ class AccountService:
             access_token = self._pick_next_candidate_token(excluded_tokens=attempted_tokens)
             attempted_tokens.add(access_token)
             token_ref = anonymize_token(access_token)
+            now = time.monotonic()
+            last_refresh = self._refresh_mono.get(access_token)
+            if last_refresh is not None and now - last_refresh < self._refresh_ttl_seconds:
+                cached = self.get_account(access_token)
+                if self._is_image_account_available(cached or {}):
+                    return access_token
             account = self.refresh_account_state(access_token)
+            self._refresh_mono[access_token] = time.monotonic()
             if self._is_image_account_available(account or {}):
                 return access_token
             print(
@@ -325,6 +339,25 @@ class AccountService:
                 f"quota={account.get('quota') if account else 'unknown'} "
                 f"status={account.get('status') if account else 'unknown'}"
             )
+
+    def mark_token_busy(self, access_token: str, busy: bool) -> None:
+        token = self._clean_token(access_token)
+        if not token:
+            return
+        with self._lock:
+            if busy:
+                self._busy_tokens.add(token)
+            else:
+                self._busy_tokens.discard(token)
+
+    @contextmanager
+    def borrow_image_token(self) -> Iterator[str]:
+        access_token = self.get_available_access_token()
+        self.mark_token_busy(access_token, True)
+        try:
+            yield access_token
+        finally:
+            self.mark_token_busy(access_token, False)
 
     def next_token(self) -> str:
         return self.get_available_access_token()

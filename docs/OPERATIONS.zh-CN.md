@@ -72,6 +72,7 @@ docker compose --env-file deploy/production/.env.production exec api \
 | `IMAGE_JOB_RETRY_DELAY_SECONDS` | `10` | 重试间隔 |
 | `IMAGE_JOB_STALE_RUNNING_SECONDS` | `900` | 回收卡死任务 |
 | `IMAGE_SSE_TIMEOUT_SECONDS` | `180` | ChatGPT Web SSE 总等待上限 |
+| `image_job_worker_count`（设置页） | `2` | 同时画几张图，1–8，保存立即生效。1GB 内存建议 2–3 |
 
 `IMAGE_SSE_TIMEOUT_SECONDS` 防止上游建立连接后一直不返回 SSE 事件。弱网络可提高至 `240` 或 `300`；不建议设得无限大。超时会中止流并让任务进入既有失败/重试路径。
 

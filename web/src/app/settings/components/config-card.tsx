@@ -21,6 +21,7 @@ export function ConfigCard() {
   const isSavingConfig = useSettingsStore((state) => state.isSavingConfig);
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
+  const setImageJobWorkerCount = useSettingsStore((state) => state.setImageJobWorkerCount);
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
   const setProxy = useSettingsStore((state) => state.setProxy);
   const setBaseUrl = useSettingsStore((state) => state.setBaseUrl);
@@ -123,6 +124,18 @@ export function ConfigCard() {
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
             <p className="text-xs text-stone-500">用于生成图片结果的访问前缀地址。</p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm text-stone-700">生图并发路数</label>
+            <Input
+              value={String(config?.image_job_worker_count || "")}
+              onChange={(event) => setImageJobWorkerCount(event.target.value)}
+              placeholder="2"
+              className="h-10 rounded-xl border-stone-200 bg-white"
+            />
+            <p className="text-xs text-stone-500">
+              同时画几张图。保存后立即生效，不必重启。1GB 内存机器建议 2～3 路，最大 8。只加大 Viskit 并发不会变快。
+            </p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">图片自动清理</label>
