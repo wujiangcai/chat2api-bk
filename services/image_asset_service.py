@@ -329,5 +329,62 @@ class ImageAssetService:
                 return self._public_asset(next_asset)
         return None
 
+    def purge_before(self, cutoff_epoch: float, *, all_items: bool = False) -> dict[str, int]:
+        """Delete stored files and mark matching assets as deleted."""
+        removed_files = 0
+        freed_bytes = 0
+        marked = 0
+        with self._lock:
+            for index, asset in enumerate(list(self._assets)):
+                if not all_items and asset.get("status") == "deleted":
+                    continue
+                if not all_items:
+                    created = _parse_created_epoch(asset.get("created_at"))
+                    if created is None or created > cutoff_epoch:
+                        continue
+                next_asset = dict(asset)
+                object_key = _clean(next_asset.get("object_key"))
+                if object_key:
+                    try:
+                        size = self._object_size(object_key)
+                        self.object_storage.delete_object(object_key)
+                        if size > 0:
+                            freed_bytes += size
+                            removed_files += 1
+                    except Exception:
+                        pass
+                if next_asset.get("status") != "deleted":
+                    next_asset["status"] = "deleted"
+                    next_asset["deleted_at"] = _now_iso()
+                    marked += 1
+                    self._assets[index] = next_asset
+                    self._save_asset(next_asset)
+        return {"removed_files": removed_files, "freed_bytes": freed_bytes, "marked_deleted": marked}
+
+    def _object_size(self, object_key: str) -> int:
+        storage = self.object_storage
+        path_fn = getattr(storage, "_path", None)
+        if callable(path_fn):
+            try:
+                path = path_fn(object_key)
+                if isinstance(path, Path) and path.is_file():
+                    return path.stat().st_size
+            except Exception:
+                return 0
+        return 0
+
+
+def _parse_created_epoch(value: object) -> float | None:
+    text = _clean(value)
+    if not text:
+        return None
+    try:
+        created = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return created.timestamp()
+
 
 image_asset_service = ImageAssetService(config.get_storage_backend())

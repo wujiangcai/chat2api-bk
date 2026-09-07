@@ -22,6 +22,7 @@ def list_images(base_url: str, start_date: str = "", end_date: str = "") -> dict
         items.append({
             "name": path.name,
             "date": day,
+            "path": rel,
             "size": path.stat().st_size,
             "url": f"{base_url.rstrip('/')}/images/{rel}",
             "created_at": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),

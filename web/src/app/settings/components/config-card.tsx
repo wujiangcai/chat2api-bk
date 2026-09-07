@@ -1,6 +1,6 @@
 "use client";
 
-import { LoaderCircle, PlugZap, Save } from "lucide-react";
+import { LoaderCircle, PlugZap, Save, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -8,12 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { testProxy, type ProxyTestResult } from "@/lib/api";
+import { cleanupStoredImages, testProxy, type ProxyTestResult } from "@/lib/api";
 
 import { useSettingsStore } from "../store";
 
 export function ConfigCard() {
   const [isTestingProxy, setIsTestingProxy] = useState(false);
+  const [isCleaningImages, setIsCleaningImages] = useState(false);
   const [proxyTestResult, setProxyTestResult] = useState<ProxyTestResult | null>(null);
   const config = useSettingsStore((state) => state.config);
   const isLoadingConfig = useSettingsStore((state) => state.isLoadingConfig);
@@ -131,7 +132,30 @@ export function ConfigCard() {
               placeholder="30"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">自动删除多少天前的本地图片。</p>
+            <p className="text-xs text-stone-500">启动和生图时自动删除超过该天数的生成图与资产缓存。默认 30 天。</p>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
+              onClick={() => {
+                void (async () => {
+                  setIsCleaningImages(true);
+                  try {
+                    const days = Math.max(0, Number(config?.image_retention_days) || 30);
+                    const result = await cleanupStoredImages({ older_than_days: days });
+                    toast.success(`已清理 ${result.removed_files} 个文件`);
+                  } catch (error) {
+                    toast.error(error instanceof Error ? error.message : "清理失败");
+                  } finally {
+                    setIsCleaningImages(false);
+                  }
+                })();
+              }}
+              disabled={isCleaningImages || isSavingConfig}
+            >
+              {isCleaningImages ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+              立即按保留天数清理
+            </Button>
           </div>
           <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
             <Checkbox

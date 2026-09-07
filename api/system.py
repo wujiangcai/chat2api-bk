@@ -15,6 +15,7 @@ from services.billing_service import billing_service
 from services.config import config
 from services.email_service import email_service
 from services.image_service import list_images
+from services.image_storage import cleanup_expired_storage, delete_legacy_images, storage_usage
 from services.log_service import log_service
 from services.launch_evidence_service import launch_evidence_service
 from services.monitoring_service import monitoring_service
@@ -75,6 +76,17 @@ class LaunchEvidenceCreateRequest(BaseModel):
     name: str = ""
     source: str = "manual-upload"
     report: dict[str, object] = Field(default_factory=dict)
+
+
+class StorageCleanupRequest(BaseModel):
+    older_than_days: int | None = Field(default=None, ge=0)
+    include_images: bool = True
+    include_assets: bool = True
+    include_job_inputs: bool = True
+
+
+class StorageDeleteImagesRequest(BaseModel):
+    paths: list[str] = Field(default_factory=list)
 
 
 class PaymentWebhookReplayRequest(BaseModel):
@@ -1008,6 +1020,30 @@ def create_router(app_version: str) -> APIRouter:
     async def get_images(request: Request, start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):
         require_admin(authorization)
         return list_images(resolve_image_base_url(request), start_date=start_date.strip(), end_date=end_date.strip())
+
+    @router.get("/api/admin/storage/usage")
+    async def get_storage_usage(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return storage_usage()
+
+    @router.post("/api/admin/storage/cleanup")
+    async def cleanup_storage(body: StorageCleanupRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return await run_in_threadpool(
+            cleanup_expired_storage,
+            older_than_days=body.older_than_days,
+            include_images=body.include_images,
+            include_assets=body.include_assets,
+            include_job_inputs=body.include_job_inputs,
+        )
+
+    @router.post("/api/admin/storage/delete-images")
+    async def delete_stored_images(body: StorageDeleteImagesRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        paths = [str(path or "").strip() for path in body.paths if str(path or "").strip()]
+        if not paths:
+            raise HTTPException(status_code=400, detail={"error": "paths is required"})
+        return await run_in_threadpool(delete_legacy_images, paths)
 
     @router.get("/api/logs")
     async def get_logs(type: str = "", start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):

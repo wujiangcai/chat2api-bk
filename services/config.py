@@ -147,18 +147,10 @@ class ConfigStore:
         return path
 
     def cleanup_old_images(self) -> int:
-        cutoff = time.time() - self.image_retention_days * 86400
-        removed = 0
-        for path in self.images_dir.rglob("*"):
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink()
-                removed += 1
-        for path in sorted((p for p in self.images_dir.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
-            try:
-                path.rmdir()
-            except OSError:
-                pass
-        return removed
+        from services.image_storage import cleanup_expired_storage
+
+        result = cleanup_expired_storage(older_than_days=self.image_retention_days)
+        return int(result.get("removed_files") or 0)
 
     @property
     def base_url(self) -> str:

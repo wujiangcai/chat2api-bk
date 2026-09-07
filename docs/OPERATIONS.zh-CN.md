@@ -81,6 +81,8 @@ docker compose --env-file deploy/production/.env.production exec api \
 
 账号连续失败达到 `auto_disable_consecutive_fail`（默认 5）会把该号标为调度禁用，**不会改 `status`**。号池页用「禁用账户」卡片、行内解锁按钮和「一键恢复禁用账号」管理。自动禁用不会关掉最后一个仍可用的号，避免网关抖动把整池打挂。
 
+生成图缓存在 `data/images` 与 `data/assets`。设置里的「图片自动清理」天数对两处都生效；图片管理页可看占用、单张/批量删除、按保留天数清理或清空缓存。
+
 ## 5. 测试门禁
 
 后端：

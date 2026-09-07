@@ -64,9 +64,27 @@ export type SettingsConfig = {
 export type ManagedImage = {
   name: string;
   date: string;
+  path?: string;
   size: number;
   url: string;
   created_at: string;
+};
+
+export type StorageUsage = {
+  images: { files: number; bytes: number };
+  assets: { files: number; bytes: number };
+  job_inputs: { files: number; bytes: number };
+  jobs_bytes: number;
+  total_bytes: number;
+  retention_days: number;
+};
+
+export type StorageCleanupResult = {
+  older_than_days: number;
+  removed_files: number;
+  freed_bytes: number;
+  marked_deleted: number;
+  usage: StorageUsage;
 };
 
 export type SystemLog = {
@@ -1198,6 +1216,32 @@ export async function fetchManagedImages(filters: { start_date?: string; end_dat
   if (filters.end_date) params.set("end_date", filters.end_date);
   return httpRequest<{ items: ManagedImage[]; groups: Array<{ date: string; items: ManagedImage[] }> }>(
     `/api/images${params.toString() ? `?${params.toString()}` : ""}`,
+  );
+}
+
+export async function fetchStorageUsage() {
+  return httpRequest<StorageUsage>("/api/admin/storage/usage");
+}
+
+export async function cleanupStoredImages(payload: {
+  older_than_days?: number | null;
+  include_images?: boolean;
+  include_assets?: boolean;
+  include_job_inputs?: boolean;
+} = {}) {
+  return httpRequest<StorageCleanupResult>("/api/admin/storage/cleanup", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export async function deleteStoredImages(paths: string[]) {
+  return httpRequest<{ removed_files: number; freed_bytes: number; errors: string[] }>(
+    "/api/admin/storage/delete-images",
+    {
+      method: "POST",
+      body: { paths },
+    },
   );
 }
 
